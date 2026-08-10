@@ -1,7 +1,7 @@
 CC      ?= cc
 CFLAGS   = -std=c99 -O2 -Wall -Wextra -Werror -g
 OBJDIR   = build
-OBJS     = $(OBJDIR)/main.o $(OBJDIR)/util.o $(OBJDIR)/lexer.o $(OBJDIR)/parser.o $(OBJDIR)/ast.o
+OBJS     = $(OBJDIR)/main.o $(OBJDIR)/util.o $(OBJDIR)/lexer.o $(OBJDIR)/parser.o $(OBJDIR)/ast.o $(OBJDIR)/codegen.o
 BIN      = smallcc
 
 $(BIN): $(OBJS)
@@ -13,12 +13,20 @@ $(OBJDIR)/%.o: src/%.c | $(OBJDIR)
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
+# dump mode only validates the front end, the run tests compile the
+# generated assembly with cc(1) and execute the result
 test: $(BIN)
-	./$(BIN) tests/decls.c
-	./$(BIN) tests/expr.c
-	./$(BIN) tests/func.c
-	./$(BIN) tests/funcptr.c
+	./$(BIN) -a tests/decls.c
+	./$(BIN) -a tests/expr.c
+	./$(BIN) -a tests/func.c
+	./$(BIN) -a tests/funcptr.c
 	./$(BIN) -t tests/lexer.c
+	@set -e; for t in run1 run2 run3 run4 run5 runfptr; do \
+	  echo "== $$t =="; \
+	  ./$(BIN) tests/$$t.c; \
+	  $(CC) $(CFLAGS) -o $(OBJDIR)/$$t $(OBJDIR)/$$t.s; \
+	  ./$(OBJDIR)/$$t; \
+	done
 
 clean:
 	rm -rf $(OBJDIR) $(BIN)

@@ -11,16 +11,18 @@ static Type *type_zalloc(void) {
   return t;
 }
 
-static int type_size(Type *t) {
+/* sizes for the x86-64 SysV target. the -m16/-m32 legacy targets will
+ * need this table replaced wholesale, that's why it's one function */
+int type_size(Type *t) {
   switch (t->kind) {
-    case TY_VOID:   return 0;
+    case TY_VOID:   return 1;
     case TY_CHAR:   return 1;
     case TY_SHORT:  return 2;
     case TY_INT:    return 4;
-    case TY_LONG:   return t->is_longlong ? 8 : 4;
+    case TY_LONG:   return 8;
     case TY_FLOAT:  return 4;
     case TY_DOUBLE: return 8;
-    case TY_PTR:    return 4;   /* FIXME: default 32-bit target, -m16 later */
+    case TY_PTR:    return 8;
     case TY_ARRAY:  return type_size(t->base) * t->array_len;
     case TY_FUNC:   return 0;   /* sizeof(func) illegal; designators decay */
   }

@@ -361,7 +361,9 @@ static Node *parse_unary(void) {
   int op = to_op();
   if (op == OP_INC || op == OP_DEC) {
     tok = tok->next;
-    return new_unary(op, parse_unary());
+    Node *n = new_unary(op, parse_unary());
+    n->is_prefix = 1;
+    return n;
   }
 
   return parse_postfix();
@@ -425,6 +427,7 @@ static Node *parse_postfix(void) {
     if (op == OP_INC || op == OP_DEC) {
       tok = tok->next;
       node = new_unary(op, node);
+      node->is_prefix = 0;
       continue;
     }
 

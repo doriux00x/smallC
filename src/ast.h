@@ -2,6 +2,7 @@
 #define AST_H
 
 typedef struct Node Node;
+typedef struct Obj Obj;
 
 typedef enum {
   TY_VOID, TY_CHAR, TY_SHORT, TY_INT, TY_LONG,
@@ -25,6 +26,7 @@ Type *type_new(TypeKind k);
 Type *ptr_to(Type *base);
 Type *array_of(Type *base, int len);
 Type *func_type(Type *ret);
+int type_size(Type *t);
 
 typedef enum {
   ND_DECL,           /* variable declaration */
@@ -80,6 +82,8 @@ struct Node {
   int val;                     /* ND_NUM */
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */
+  int is_prefix;               /* ND_UNARY ++/--: prefix vs postfix */
+  Obj *var;                    /* resolved symbol, ND_VAR / ND_STR */
   Type *targ;                  /* ND_SIZEOF type operand */
 };
 

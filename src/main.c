@@ -1,4 +1,5 @@
 #include "ast.h"
+#include "codegen.h"
 #include "parser.h"
 #include "token.h"
 #include "util.h"
@@ -6,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static void dump_type(Type *t) {
   const char *pre = t->is_unsigned ? "unsigned " : "";
@@ -223,16 +225,31 @@ static void dump_stmt(Node *n, int d) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: smallcc [-t] <file.c>\n");
+  fprintf(stderr, "usage: smallcc [-a|-t] <file.c>\n");
   exit(1);
 }
 
+/* strip the directory and extension, so tests/run1.c is run1.s */
+static char *out_base(char *path) {
+  char *base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  char *dot = strrchr(base, '.');
+  if (dot)
+    *dot = '\0';
+  char *out = xmalloc(strlen(base) + 8);
+  sprintf(out, "build/%s.s", base);
+  return out;
+}
+
 int main(int argc, char **argv) {
-  int dump_tokens = 0;
+  enum { MODE_COMPILE, MODE_DUMP_AST, MODE_DUMP_TOKENS } mode = MODE_COMPILE;
   char *path;
 
-  if (argc == 3 && strcmp(argv[1], "-t") == 0) {
-    dump_tokens = 1;
+  if (argc == 3 && strcmp(argv[1], "-a") == 0) {
+    mode = MODE_DUMP_AST;
+    path = argv[2];
+  } else if (argc == 3 && strcmp(argv[1], "-t") == 0) {
+    mode = MODE_DUMP_TOKENS;
     path = argv[2];
   } else if (argc == 2) {
     path = argv[1];
@@ -244,7 +261,7 @@ int main(int argc, char **argv) {
 
   Token *toks = tokenize(g_src);
 
-  if (dump_tokens) {
+  if (mode == MODE_DUMP_TOKENS) {
     for (Token *t = toks; t; t = t->next) {
       if (t->kind == TK_EOF) {
         printf("EOF\n");
@@ -261,6 +278,8 @@ int main(int argc, char **argv) {
   }
 
   Node *root = parse(toks);
+
+  if (mode == MODE_DUMP_AST) {
 
   int count = 0;
   for (Node *n = root; n; n = n->next) {
@@ -280,5 +299,13 @@ int main(int argc, char **argv) {
     count++;
   }
   printf("%d top-level item(s)\n", count);
+    return 0;
+  }
+
+  resolve(root);
+
+  char *outpath = out_base(path);
+  mkdir("build", 0755);   /* cc(1) would just fail, we're kinder */
+  codegen(root, outpath);
   return 0;
 }
