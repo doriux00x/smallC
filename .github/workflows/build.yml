@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build
+        run: make
+
+      - name: run tests
+        run: make test
+
+      # the whole point of this project: the compiler must stay under 2MB.
+      # this is a hard limit, not a nicety - the target hardware can't
+      # hold more than that
+      - name: compiler under 2MB
+        run: |
+          size=$(stat -c%s smallcc)
+          echo "compiler size: $size bytes"
+          limit=2097152
+          if [ "$size" -ge "$limit" ]; then
+            echo "compiler is over the 2MB limit, this build is dead on arrival"
+            exit 1
+          fi
+          echo "compiler is $((limit - size)) bytes under the 2MB limit"
