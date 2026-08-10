@@ -2,6 +2,14 @@
 #include "util.h"
 
 #include <stdlib.h>
+#include <string.h>
+
+/* zeroed, so base/ret/params never hold garbage the walkers might chase */
+static Type *type_zalloc(void) {
+  Type *t = xmalloc(sizeof(Type));
+  memset(t, 0, sizeof(Type));
+  return t;
+}
 
 static int type_size(Type *t) {
   switch (t->kind) {
@@ -20,14 +28,14 @@ static int type_size(Type *t) {
 }
 
 Type *type_new(TypeKind k) {
-  Type *t = xmalloc(sizeof(Type));
+  Type *t = type_zalloc();
   t->kind = k;
   t->size = type_size(t);
   return t;
 }
 
 Type *ptr_to(Type *base) {
-  Type *t = xmalloc(sizeof(Type));
+  Type *t = type_zalloc();
   t->kind = TY_PTR;
   t->base = base;
   t->size = type_size(t);
@@ -35,7 +43,7 @@ Type *ptr_to(Type *base) {
 }
 
 Type *array_of(Type *base, int len) {
-  Type *t = xmalloc(sizeof(Type));
+  Type *t = type_zalloc();
   t->kind = TY_ARRAY;
   t->base = base;
   t->array_len = len;
@@ -44,7 +52,7 @@ Type *array_of(Type *base, int len) {
 }
 
 Type *func_type(Type *ret) {
-  Type *t = xmalloc(sizeof(Type));
+  Type *t = type_zalloc();
   t->kind = TY_FUNC;
   t->ret = ret;
   t->size = 0;

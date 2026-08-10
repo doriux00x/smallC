@@ -17,6 +17,7 @@ test: $(BIN)
 	./$(BIN) tests/decls.c
 	./$(BIN) tests/expr.c
 	./$(BIN) tests/func.c
+	./$(BIN) tests/funcptr.c
 	./$(BIN) -t tests/lexer.c
 
 clean:

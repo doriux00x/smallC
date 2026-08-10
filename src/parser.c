@@ -99,13 +99,9 @@ static Type *parse_typespec(void) {
   return t;
 }
 
-/* type with no name, for sizeof(int *) calls */
-static Type *parse_abstract_type(void) {
-  Type *t = parse_typespec();
-  while (consume_punct("*"))
-    t = ptr_to(t);
-  return t;
-}
+/* declarator and its helpers live in the declarations section */
+static Type *declarator(Type *base, char **name);
+static Type *suffix_loop(Type *t);
 
 /* -------- operators -------- */
 
@@ -443,7 +439,8 @@ static Node *parse_primary(void) {
     Type *ty = NULL;
     if (is_punct("(") && tok->next && is_typespec_start(tok->next)) {
       tok = tok->next;
-      ty = parse_abstract_type();
+      char *dummy;
+      ty = declarator(parse_typespec(), &dummy);
       expect_punct(")");
     }
 
@@ -507,60 +504,6 @@ static Node *parse_block(void) {
 
   Node *n = node_new(ND_BLOCK);
   n->body = head.next;
-  return n;
-}
-
-/* parses everything after the '(' of a declarator: the param list and
- * optionally a '{' body. '(' is the current token on entry */
-static Node *parse_func(char *name, Type *ret) {
-  expect_punct("(");
-  Type *ft = func_type(ret);
-
-  Node head = {0};
-  Node **link = &head.next;
-
-  if (!consume_punct(")")) {
-    /* "(void)" means no params; a lone void keyword */
-    if (at(TK_VOID) && is_punct_next(")")) {
-      tok = tok->next;
-      expect_punct(")");
-    } else {
-      for (;;) {
-        Type *pt = parse_typespec();
-        while (consume_punct("*"))
-          pt = ptr_to(pt);
-
-        Node *pn = node_new(ND_DECL);
-        if (at(TK_IDENT))
-          pn->name = expect_ident("parameter name")->name;
-
-        if (consume_punct("[")) {
-          if (at(TK_NUM)) {
-            int len = tok->val;
-            tok = tok->next;
-            pt = array_of(pt, len);
-          }
-          expect_punct("]");
-          /* FIXME: params decay to pointers, that's a sema pass */
-        }
-        pn->type = pt;
-        *link = pn;
-        link = &pn->next;
-
-        if (consume_punct(")"))
-          break;
-        expect_punct(",");
-      }
-    }
-  }
-
-  ft->params = head.next;
-
-  Node *n = node_new(ND_FUNC);
-  n->name = name;
-  n->type = ft;
-  if (consume_punct("{"))
-    n->body = parse_block();
   return n;
 }
 
@@ -687,31 +630,128 @@ static Node *parse_stmt(void) {
 
 /* -------- declarations -------- */
 
-/* "name", "*name", "name[N]", optional "= expr", or a function:
- * "name(params)" with optional body. the type left of any '(' goes
- * back through *out */
-static Node *parse_declarator(Type *base, Type **out) {
-  while (consume_punct("*"))
-    base = ptr_to(base);
+/* "(" params ")" becomes a function type with the given return type */
+static Type *parse_params(Type *ret) {
+  expect_punct("(");
+  Type *ft = func_type(ret);
 
-  Token *ident = expect_ident("identifier");
+  Node head = {0};
+  Node **link = &head.next;
 
-  if (consume_punct("[")) {
-    if (!at(TK_NUM))
-      error_at(tok->loc, "expected array size");
-    int len = tok->val;
-    tok = tok->next;
-    expect_punct("]");
-    base = array_of(base, len);
+  if (!consume_punct(")")) {
+    /* "(void)" alone means no params */
+    if (at(TK_VOID) && is_punct_next(")")) {
+      tok = tok->next;
+      expect_punct(")");
+    } else {
+      for (;;) {
+        Type *pt = parse_typespec();
+        char *pname = NULL;
+        pt = declarator(pt, &pname);   /* abstract declarators allowed */
+
+        Node *pn = node_new(ND_DECL);
+        pn->name = pname;
+        pn->type = pt;
+        *link = pn;
+        link = &pn->next;
+
+        if (consume_punct(")"))
+          break;
+        expect_punct(",");
+      }
+    }
   }
-  *out = base;
 
-  if (is_punct("("))
-    return parse_func(ident->name, base);
+  ft->params = head.next;
+  return ft;
+}
+
+/* array and parameter suffixes; "f[3](int)" is array of func */
+static Type *suffix_loop(Type *t) {
+  for (;;) {
+    if (consume_punct("[")) {
+      int len = 0;
+      if (at(TK_NUM)) {
+        len = tok->val;
+        tok = tok->next;
+      }
+      expect_punct("]");
+      t = array_of(t, len);
+      continue;
+    }
+    if (is_punct("("))
+      t = parse_params(t);
+    else
+      return t;
+  }
+}
+
+/* the full C declarator grammar, including "(*fp)(int)".
+ * <name> comes back NULL for abstract declarators (params, sizeof).
+ *
+ * the parenthesized case is the fun part: the inner declarator is
+ * parsed against a dummy type, so the group's chain (ptr/array) is
+ * built by wrapping the dummy. anything after the group is a function
+ * or array suffix which binds to the base + outer stars instead -
+ * "int (*fp)(int)" means fp is a pointer to a function, not a function
+ * returning a pointer. so the real type is stitched into the leaf of
+ * the chain where the dummy sits */
+static Type *declarator(Type *base, char **name) {
+  Type *t = base;
+  while (consume_punct("*"))
+    t = ptr_to(t);
+
+  if (consume_punct("(")) {
+    Type dummy = {0};
+    Type *inner = declarator(&dummy, name);
+    expect_punct(")");
+
+    t = suffix_loop(t);
+    if (inner == &dummy) {
+      inner = t;   /* "(fp)(int)": no wraps inside at all */
+    } else {
+      /* walk the inner chain to the leaf holding the dummy; functions
+       * keep their "chain" in ret, everything else in base */
+      Type *p = inner;
+      for (;;) {
+        Type **slot = (p->kind == TY_FUNC) ? &p->ret : &p->base;
+        if (*slot == &dummy)
+          break;
+        p = *slot;
+      }
+      *((p->kind == TY_FUNC) ? &p->ret : &p->base) = t;
+    }
+    return inner;
+  }
+
+  *name = NULL;
+  if (at(TK_IDENT))
+    *name = expect_ident("identifier")->name;
+  return suffix_loop(t);
+}
+
+/* a named declarator, wrapped into a node; functions may pick up a
+ * body here */
+static Node *parse_declarator(Type *base, Type **out) {
+  char *name;
+  Type *t = declarator(base, &name);
+  *out = t;
+
+  if (t->kind == TY_FUNC) {
+    Node *n = node_new(ND_FUNC);
+    n->name = name;
+    n->type = t;
+    if (consume_punct("{"))
+      n->body = parse_block();
+    return n;
+  }
+
+  if (!name)
+    error_at(tok->loc, "expected identifier");
 
   Node *n = node_new(ND_DECL);
-  n->name = ident->name;
-  n->type = base;
+  n->name = name;
+  n->type = t;
 
   if (consume_punct("=")) {
     if (is_punct("{"))
