@@ -24,6 +24,18 @@ static void dump_type(Type *t) {
       printf("array[%d]of ", t->array_len);
       dump_type(t->base);
       return;
+    case TY_FUNC:
+      printf("func(");
+      for (Node *p = t->params; p; p = p->next) {
+        dump_type(p->type);
+        if (p->name)
+          printf(" %s", p->name);
+        if (p->next)
+          printf(", ");
+      }
+      printf(") -> ");
+      dump_type(t->ret);
+      return;
   }
 }
 
@@ -131,6 +143,85 @@ static void dump_expr(Node *n, int d) {
   }
 }
 
+static void dump_stmt(Node *n, int d);
+static void dump_stmt_chain(Node *s, int d) {
+  for (; s; s = s->next)
+    dump_stmt(s, d);
+}
+
+static void dump_stmt(Node *n, int d) {
+  indent(d);
+  switch (n->kind) {
+    case ND_BLOCK:
+      printf("block\n");
+      dump_stmt_chain(n->body, d + 1);
+      return;
+    case ND_DECL:
+      printf("decl %-14s %2d bytes : ", n->name, n->type->size);
+      dump_type(n->type);
+      printf("\n");
+      if (n->init)
+        dump_expr(n->init, d + 1);
+      return;
+    case ND_EXPR_STMT:
+      printf("expr stmt\n");
+      if (n->lhs)
+        dump_expr(n->lhs, d + 1);
+      return;
+    case ND_IF:
+      printf("if\n");
+      dump_expr(n->cond, d + 1);
+      dump_stmt(n->then, d + 1);
+      if (n->els)
+        dump_stmt(n->els, d + 1);
+      return;
+    case ND_WHILE:
+      printf("while\n");
+      dump_expr(n->cond, d + 1);
+      dump_stmt(n->then, d + 1);
+      return;
+    case ND_DO_WHILE:
+      printf("do-while\n");
+      dump_stmt(n->then, d + 1);
+      dump_expr(n->cond, d + 1);
+      return;
+    case ND_FOR:
+      printf("for\n");
+      if (n->init)
+        dump_stmt_chain(n->init, d + 1);
+      if (n->cond)
+        dump_expr(n->cond, d + 1);
+      if (n->inc)
+        dump_expr(n->inc, d + 1);
+      dump_stmt(n->then, d + 1);
+      return;
+    case ND_RETURN:
+      printf("return\n");
+      if (n->lhs)
+        dump_expr(n->lhs, d + 1);
+      return;
+    case ND_BREAK:
+      printf("break\n");
+      return;
+    case ND_CONTINUE:
+      printf("continue\n");
+      return;
+    case ND_FUNC:
+      printf("func %s : ", n->name);
+      dump_type(n->type);
+      printf("\n");
+      if (n->body)
+        dump_stmt(n->body, d + 1);
+      else {
+        indent(d + 1);
+        printf("(prototype)\n");
+      }
+      return;
+    default:
+      dump_expr(n, d);
+  }
+}
+
 static void usage(void) {
   fprintf(stderr, "usage: smallcc [-t] <file.c>\n");
   exit(1);
@@ -173,6 +264,11 @@ int main(int argc, char **argv) {
 
   int count = 0;
   for (Node *n = root; n; n = n->next) {
+    if (n->kind == ND_FUNC) {
+      dump_stmt(n, 0);
+      count++;
+      continue;
+    }
     printf("%-16s %2d bytes : ", n->name, n->type->size);
     dump_type(n->type);
     if (n->init) {
@@ -183,6 +279,6 @@ int main(int argc, char **argv) {
     }
     count++;
   }
-  printf("%d declaration(s)\n", count);
+  printf("%d top-level item(s)\n", count);
   return 0;
 }

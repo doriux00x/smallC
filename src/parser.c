@@ -8,6 +8,9 @@
 
 static Token *tok;
 
+/* loops we're nested in, so break/continue can be validated */
+static int nloop;
+
 static Token *consume(TokenKind k) {
   if (tok->kind != k)
     return NULL;
@@ -36,6 +39,15 @@ static int is_punct(char *op) {
   return tok->kind == TK_PUNCT &&
          tok->len == (int)strlen(op) &&
          memcmp(tok->loc, op, tok->len) == 0;
+}
+
+static int is_punct_next(char *op) {
+  Token *t = tok->next;
+  if (!t)
+    return 0;
+  return t->kind == TK_PUNCT &&
+         t->len == (int)strlen(op) &&
+         memcmp(t->loc, op, t->len) == 0;
 }
 
 static int consume_punct(char *op) {
@@ -470,11 +482,215 @@ static Node *parse_primary(void) {
   error_at(tok->loc, "expected expression");
 }
 
+/* -------- statements -------- */
+
+static Node *parse_declaration(void);
+static Node *parse_stmt(void);
+static Node *parse_block(void);
+
+static Node *parse_block(void) {
+  /* '{' already consumed */
+  Node head = {0};
+  Node **link = &head.next;
+
+  while (!is_punct("}")) {
+    if (tok->kind == TK_EOF)
+      error_at(tok->loc, "unexpected EOF, missing '}'");
+    Node *s = parse_stmt();
+    while (s) {
+      *link = s;
+      link = &s->next;
+      s = s->next;
+    }
+  }
+  tok = tok->next;   /* '}' */
+
+  Node *n = node_new(ND_BLOCK);
+  n->body = head.next;
+  return n;
+}
+
+/* parses everything after the '(' of a declarator: the param list and
+ * optionally a '{' body. '(' is the current token on entry */
+static Node *parse_func(char *name, Type *ret) {
+  expect_punct("(");
+  Type *ft = func_type(ret);
+
+  Node head = {0};
+  Node **link = &head.next;
+
+  if (!consume_punct(")")) {
+    /* "(void)" means no params; a lone void keyword */
+    if (at(TK_VOID) && is_punct_next(")")) {
+      tok = tok->next;
+      expect_punct(")");
+    } else {
+      for (;;) {
+        Type *pt = parse_typespec();
+        while (consume_punct("*"))
+          pt = ptr_to(pt);
+
+        Node *pn = node_new(ND_DECL);
+        if (at(TK_IDENT))
+          pn->name = expect_ident("parameter name")->name;
+
+        if (consume_punct("[")) {
+          if (at(TK_NUM)) {
+            int len = tok->val;
+            tok = tok->next;
+            pt = array_of(pt, len);
+          }
+          expect_punct("]");
+          /* FIXME: params decay to pointers, that's a sema pass */
+        }
+        pn->type = pt;
+        *link = pn;
+        link = &pn->next;
+
+        if (consume_punct(")"))
+          break;
+        expect_punct(",");
+      }
+    }
+  }
+
+  ft->params = head.next;
+
+  Node *n = node_new(ND_FUNC);
+  n->name = name;
+  n->type = ft;
+  if (consume_punct("{"))
+    n->body = parse_block();
+  return n;
+}
+
+static Node *parse_stmt(void) {
+  if (consume_punct("{"))
+    return parse_block();
+
+  if (consume(TK_RETURN)) {
+    Node *n = node_new(ND_RETURN);
+    if (!is_punct(";"))
+      n->lhs = parse_expr();
+    expect_punct(";");
+    return n;
+  }
+
+  if (consume(TK_IF)) {
+    expect_punct("(");
+    Node *cond = parse_expr();
+    expect_punct(")");
+
+    Node *then = parse_stmt();
+    Node *els = NULL;
+    if (consume(TK_ELSE))
+      els = parse_stmt();
+
+    Node *n = node_new(ND_IF);
+    n->cond = cond;
+    n->then = then;
+    n->els = els;
+    return n;
+  }
+
+  if (consume(TK_WHILE)) {
+    expect_punct("(");
+    Node *cond = parse_expr();
+    expect_punct(")");
+
+    Node *n = node_new(ND_WHILE);
+    n->cond = cond;
+    nloop++;
+    n->then = parse_stmt();
+    nloop--;
+    return n;
+  }
+
+  if (consume(TK_DO)) {
+    Node *n = node_new(ND_DO_WHILE);
+    nloop++;
+    n->then = parse_stmt();
+    nloop--;
+    expect(TK_WHILE, "'while' after do block");
+    expect_punct("(");
+    n->cond = parse_expr();
+    expect_punct(")");
+    expect_punct(";");
+    return n;
+  }
+
+  if (consume(TK_FOR)) {
+    expect_punct("(");
+
+    Node *init = NULL;
+    if (!consume_punct(";")) {
+      if (is_typespec_start(tok))
+        init = parse_declaration();   /* consumes its own ';' */
+      else {
+        Node *e = node_new(ND_EXPR_STMT);
+        e->lhs = parse_expr();
+        expect_punct(";");
+        init = e;
+      }
+    }
+
+    Node *cond = NULL;
+    if (!is_punct(";"))
+      cond = parse_expr();
+    expect_punct(";");
+
+    Node *inc = NULL;
+    if (!is_punct(")"))
+      inc = parse_expr();
+    expect_punct(")");
+
+    Node *n = node_new(ND_FOR);
+    n->init = init;
+    n->cond = cond;
+    n->inc = inc;
+    nloop++;
+    n->then = parse_stmt();
+    nloop--;
+    return n;
+  }
+
+  if (consume(TK_BREAK)) {
+    if (!nloop)
+      error_at(tok->loc, "break outside of loop");
+    expect_punct(";");
+    return node_new(ND_BREAK);
+  }
+
+  if (consume(TK_CONTINUE)) {
+    if (!nloop)
+      error_at(tok->loc, "continue outside of loop");
+    expect_punct(";");
+    return node_new(ND_CONTINUE);
+  }
+
+  if (is_typespec_start(tok)) {
+    Node *s = parse_declaration();
+    for (Node *m = s; m; m = m->next)
+      if (m->kind == ND_FUNC && m->body)
+        /* the body's parse already swallowed the enclosing block */
+        error("function '%s' defined inside a block, unsupported", m->name);
+    return s;
+  }
+
+  /* expression statement; a bare ';' also lands here */
+  Node *e = node_new(ND_EXPR_STMT);
+  if (!consume_punct(";"))
+    e->lhs = parse_expr();
+  expect_punct(";");
+  return e;
+}
+
 /* -------- declarations -------- */
 
-/* "name", "*name", "name[N]", plus an optional initializer.
- * parens in declarators come with function types */
-static Node *parse_declarator(Type *base) {
+/* "name", "*name", "name[N]", optional "= expr", or a function:
+ * "name(params)" with optional body. the type left of any '(' goes
+ * back through *out */
+static Node *parse_declarator(Type *base, Type **out) {
   while (consume_punct("*"))
     base = ptr_to(base);
 
@@ -488,6 +704,10 @@ static Node *parse_declarator(Type *base) {
     expect_punct("]");
     base = array_of(base, len);
   }
+  *out = base;
+
+  if (is_punct("("))
+    return parse_func(ident->name, base);
 
   Node *n = node_new(ND_DECL);
   n->name = ident->name;
@@ -502,25 +722,26 @@ static Node *parse_declarator(Type *base) {
 }
 
 static Node *parse_declaration(void) {
+  Node *first = NULL;
+  Node **link = &first;
   Type *base = parse_typespec();
 
-  Node head = {0};
-  Node **link = &head.next;
-
   for (;;) {
-    Node *n = parse_declarator(base);
+    Type *t;
+    Node *n = parse_declarator(base, &t);
     *link = n;
     link = &n->next;
 
-    if (is_punct("("))
-      error_at(tok->loc, "function definitions not implemented yet");
+    /* a function with a body ends the list; there is no trailing ';' */
+    if (n->kind == ND_FUNC && n->body)
+      return first;
 
     if (!consume_punct(","))
       break;
   }
 
   expect_punct(";");
-  return head.next;
+  return first;
 }
 
 static Node *parse_program(void) {

@@ -14,6 +14,7 @@ static int type_size(Type *t) {
     case TY_DOUBLE: return 8;
     case TY_PTR:    return 4;   /* FIXME: default 32-bit target, -m16 later */
     case TY_ARRAY:  return type_size(t->base) * t->array_len;
+    case TY_FUNC:   return 0;   /* sizeof(func) illegal; designators decay */
   }
   return 0;
 }
@@ -39,5 +40,13 @@ Type *array_of(Type *base, int len) {
   t->base = base;
   t->array_len = len;
   t->size = type_size(t);
+  return t;
+}
+
+Type *func_type(Type *ret) {
+  Type *t = xmalloc(sizeof(Type));
+  t->kind = TY_FUNC;
+  t->ret = ret;
+  t->size = 0;
   return t;
 }

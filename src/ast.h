@@ -1,9 +1,11 @@
 #ifndef AST_H
 #define AST_H
 
+typedef struct Node Node;
+
 typedef enum {
   TY_VOID, TY_CHAR, TY_SHORT, TY_INT, TY_LONG,
-  TY_FLOAT, TY_DOUBLE, TY_PTR, TY_ARRAY,
+  TY_FLOAT, TY_DOUBLE, TY_PTR, TY_ARRAY, TY_FUNC,
 } TypeKind;
 
 typedef struct Type Type;
@@ -15,14 +17,27 @@ struct Type {
   int size;          /* bytes per target ABI */
   int array_len;     /* TY_ARRAY only */
   Type *base;        /* pointee / element type */
+  Type *ret;         /* TY_FUNC return type */
+  Node *params;      /* TY_FUNC params, ND_DECL nodes linked by next */
 };
 
 Type *type_new(TypeKind k);
 Type *ptr_to(Type *base);
 Type *array_of(Type *base, int len);
+Type *func_type(Type *ret);
 
 typedef enum {
   ND_DECL,           /* variable declaration */
+  ND_FUNC,           /* function, body is NULL for a prototype */
+  ND_BLOCK,          /* { ... }, children chained in body */
+  ND_EXPR_STMT,      /* expression statement */
+  ND_IF,             /* cond / then / els */
+  ND_WHILE,          /* cond / then */
+  ND_DO_WHILE,       /* then / cond */
+  ND_FOR,            /* init / cond / inc / then */
+  ND_RETURN,         /* lhs or NULL */
+  ND_BREAK,
+  ND_CONTINUE,
   ND_NUM,            /* integer literal */
   ND_STR,            /* string literal */
   ND_VAR,            /* variable reference */
@@ -49,15 +64,15 @@ enum {
   OP_INC, OP_DEC,
 };
 
-typedef struct Node Node;
-
 struct Node {
   NodeKind kind;
   Type *type;        /* ND_DECL only; expr nodes get typed in the sema pass */
   Node *lhs, *rhs;
-  Node *cond, *then, *els;     /* ND_COND */
+  Node *cond, *then, *els;     /* ND_COND / ND_IF / ND_WHILE / ND_FOR */
   Node *args;                  /* ND_CALL, linked by next */
-  Node *init;                  /* ND_DECL initializer */
+  Node *body;                  /* ND_FUNC body / ND_BLOCK children */
+  Node *init;                  /* ND_DECL / ND_FOR init */
+  Node *inc;                   /* ND_FOR */
   Node *next;
   char *name;                  /* identifier */
   char *str;                   /* ND_STR decoded contents */
