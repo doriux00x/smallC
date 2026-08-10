@@ -8,3 +8,5 @@ int oct = 0755;
 int shift = 1 << 4;
 int cmp = a != b;
 int arith = a >= b;
+char ch = 'a';
+char esc = '\n';

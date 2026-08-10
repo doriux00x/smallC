@@ -51,6 +51,15 @@ static void expect_punct(char *op) {
   tok = tok->next;
 }
 
+/* -------- types -------- */
+
+static int is_typespec_start(Token *t) {
+  return t->kind == TK_VOID || t->kind == TK_CHAR || t->kind == TK_SHORT ||
+         t->kind == TK_INT || t->kind == TK_LONG || t->kind == TK_SIGNED ||
+         t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
+         t->kind == TK_DOUBLE;
+}
+
 /* any run of type keywords: "unsigned long long" etc. */
 static Type *parse_typespec(void) {
   int is_unsigned = 0;
@@ -78,13 +87,393 @@ static Type *parse_typespec(void) {
   return t;
 }
 
+/* type with no name, for sizeof(int *) calls */
+static Type *parse_abstract_type(void) {
+  Type *t = parse_typespec();
+  while (consume_punct("*"))
+    t = ptr_to(t);
+  return t;
+}
+
+/* -------- operators -------- */
+
+static int to_op(void) {
+  if (tok->kind != TK_PUNCT)
+    return 0;
+  if (tok->len == 1)
+    return tok->loc[0];
+
+  typedef struct { char *s; int op; } OpMap;
+  static OpMap ops[] = {
+    {"<<", OP_SHL}, {">>", OP_SHR},
+    {"==", OP_EQ}, {"!=", OP_NE}, {"<=", OP_LE}, {">=", OP_GE},
+    {"&&", OP_LOGAND}, {"||", OP_LOGOR},
+    {"+=", OP_ADD_ASSIGN}, {"-=", OP_SUB_ASSIGN}, {"*=", OP_MUL_ASSIGN},
+    {"/=", OP_DIV_ASSIGN}, {"%=", OP_MOD_ASSIGN},
+    {"<<=", OP_SHL_ASSIGN}, {">>=", OP_SHR_ASSIGN},
+    {"&=", OP_AND_ASSIGN}, {"|=", OP_OR_ASSIGN}, {"^=", OP_XOR_ASSIGN},
+    {"++", OP_INC}, {"--", OP_DEC},
+  };
+  for (int i = 0; i < (int)ARRAY_LEN(ops); i++)
+    if (tok->len == (int)strlen(ops[i].s) &&
+        memcmp(tok->loc, ops[i].s, tok->len) == 0)
+      return ops[i].op;
+  return 0;
+}
+
+/* returns the current token's op code if it's in the list, else 0 */
+static int check_op(int *ops) {
+  int op = to_op();
+  if (!op)
+    return 0;
+  for (int i = 0; ops[i]; i++)
+    if (ops[i] == op)
+      return op;
+  return 0;
+}
+
+static int is_assign_op(int op) {
+  return op == '=' || (op >= OP_ADD_ASSIGN && op <= OP_XOR_ASSIGN);
+}
+
+/* -------- node constructors -------- */
+
 static Node *node_new(NodeKind k) {
   Node *n = xmalloc(sizeof(Node));
   n->kind = k;
   return n;
 }
 
-/* currently just "name" or "name[N]"; parens/function types come later */
+static Node *new_binary(int op, Node *lhs, Node *rhs) {
+  Node *n = node_new(ND_BIN);
+  n->op = op;
+  n->lhs = lhs;
+  n->rhs = rhs;
+  return n;
+}
+
+static Node *new_unary(int op, Node *lhs) {
+  Node *n = node_new(ND_UNARY);
+  n->op = op;
+  n->lhs = lhs;
+  return n;
+}
+
+static Node *new_num(int val) {
+  Node *n = node_new(ND_NUM);
+  n->val = val;
+  return n;
+}
+
+/* -------- expressions, lowest precedence first -------- */
+
+static Node *parse_assign(void);
+static Node *parse_cond(void);
+static Node *parse_logor(void);
+static Node *parse_logand(void);
+static Node *parse_bitor(void);
+static Node *parse_bitxor(void);
+static Node *parse_bitand(void);
+static Node *parse_equality(void);
+static Node *parse_relational(void);
+static Node *parse_shift(void);
+static Node *parse_add(void);
+static Node *parse_mul(void);
+static Node *parse_unary(void);
+static Node *parse_postfix(void);
+static Node *parse_primary(void);
+
+static Node *parse_expr(void) {
+  return parse_assign();
+}
+
+static Node *parse_assign(void) {
+  Node *node = parse_cond();
+
+  int op = to_op();
+  if (!is_assign_op(op))
+    return node;
+  tok = tok->next;
+
+  Node *n = node_new(ND_ASSIGN);
+  n->op = op;
+  n->lhs = node;
+  n->rhs = parse_assign();   /* right assoc */
+  return n;
+}
+
+static Node *parse_cond(void) {
+  Node *cond = parse_logor();
+
+  if (!consume_punct("?"))
+    return cond;
+
+  Node *then = parse_expr();
+  expect_punct(":");
+  Node *els = parse_cond();  /* right assoc */
+
+  Node *n = node_new(ND_COND);
+  n->cond = cond;
+  n->then = then;
+  n->els = els;
+  return n;
+}
+
+static int logor_ops[] = {OP_LOGOR, 0};
+static int logand_ops[] = {OP_LOGAND, 0};
+static int bitor_ops[] = {'|', 0};
+static int bitxor_ops[] = {'^', 0};
+static int bitand_ops[] = {'&', 0};
+static int eq_ops[] = {OP_EQ, OP_NE, 0};
+static int rel_ops[] = {'<', '>', OP_LE, OP_GE, 0};
+static int shift_ops[] = {OP_SHL, OP_SHR, 0};
+static int add_ops[] = {'+', '-', 0};
+static int mul_ops[] = {'*', '/', '%', 0};
+
+static Node *parse_logor(void) {
+  Node *node = parse_logand();
+  for (;;) {
+    int op = check_op(logor_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_logand());
+  }
+}
+
+static Node *parse_logand(void) {
+  Node *node = parse_bitor();
+  for (;;) {
+    int op = check_op(logand_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_bitor());
+  }
+}
+
+static Node *parse_bitor(void) {
+  Node *node = parse_bitxor();
+  for (;;) {
+    int op = check_op(bitor_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_bitxor());
+  }
+}
+
+static Node *parse_bitxor(void) {
+  Node *node = parse_bitand();
+  for (;;) {
+    int op = check_op(bitxor_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_bitand());
+  }
+}
+
+static Node *parse_bitand(void) {
+  Node *node = parse_equality();
+  for (;;) {
+    int op = check_op(bitand_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_equality());
+  }
+}
+
+static Node *parse_equality(void) {
+  Node *node = parse_relational();
+  for (;;) {
+    int op = check_op(eq_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_relational());
+  }
+}
+
+static Node *parse_relational(void) {
+  Node *node = parse_shift();
+  for (;;) {
+    int op = check_op(rel_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_shift());
+  }
+}
+
+static Node *parse_shift(void) {
+  Node *node = parse_add();
+  for (;;) {
+    int op = check_op(shift_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_add());
+  }
+}
+
+static Node *parse_add(void) {
+  Node *node = parse_mul();
+  for (;;) {
+    int op = check_op(add_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_mul());
+  }
+}
+
+static Node *parse_mul(void) {
+  Node *node = parse_unary();
+  for (;;) {
+    int op = check_op(mul_ops);
+    if (!op)
+      return node;
+    tok = tok->next;
+    node = new_binary(op, node, parse_unary());
+  }
+}
+
+/* -------- unary and postfix -------- */
+
+static Node *parse_unary(void) {
+  if (consume_punct("+")) return new_unary('+', parse_unary());
+  if (consume_punct("-")) return new_unary('-', parse_unary());
+  if (consume_punct("!")) return new_unary('!', parse_unary());
+  if (consume_punct("~")) return new_unary('~', parse_unary());
+  if (consume_punct("*")) return new_unary('*', parse_unary());
+  if (consume_punct("&")) return new_unary('&', parse_unary());
+
+  int op = to_op();
+  if (op == OP_INC || op == OP_DEC) {
+    tok = tok->next;
+    return new_unary(op, parse_unary());
+  }
+
+  return parse_postfix();
+}
+
+static Node *parse_postfix(void) {
+  Node *node = parse_primary();
+
+  for (;;) {
+    if (consume_punct("(")) {
+      Node *call = node_new(ND_CALL);
+      call->lhs = node;
+
+      Node head = {0};
+      Node **link = &head.next;
+      if (!consume_punct(")")) {
+        for (;;) {
+          Node *arg = parse_assign();
+          *link = arg;
+          link = &arg->next;
+          if (consume_punct(")"))
+            break;
+          expect_punct(",");
+        }
+      }
+      call->args = head.next;
+      node = call;
+      continue;
+    }
+
+    if (consume_punct("[")) {
+      Node *idx = node_new(ND_INDEX);
+      idx->lhs = node;
+      idx->rhs = parse_expr();
+      expect_punct("]");
+      node = idx;
+      continue;
+    }
+
+    if (consume_punct(".")) {
+      Token *ident = expect_ident("member name");
+      Node *m = node_new(ND_MEMBER);
+      m->lhs = node;
+      m->name = ident->name;
+      m->is_pntr = 0;
+      node = m;
+      continue;
+    }
+
+    if (consume_punct("->")) {
+      Token *ident = expect_ident("member name");
+      Node *m = node_new(ND_MEMBER);
+      m->lhs = node;
+      m->name = ident->name;
+      m->is_pntr = 1;
+      node = m;
+      continue;
+    }
+
+    int op = to_op();
+    if (op == OP_INC || op == OP_DEC) {
+      tok = tok->next;
+      node = new_unary(op, node);
+      continue;
+    }
+
+    return node;
+  }
+}
+
+static Node *parse_primary(void) {
+  /* no typedefs yet, so an ident after '(' can never be a type name */
+  if (at(TK_SIZEOF)) {
+    tok = tok->next;
+    Type *ty = NULL;
+    if (is_punct("(") && tok->next && is_typespec_start(tok->next)) {
+      tok = tok->next;
+      ty = parse_abstract_type();
+      expect_punct(")");
+    }
+
+    Node *n = node_new(ND_SIZEOF);
+    if (ty)
+      n->targ = ty;
+    else
+      n->lhs = parse_unary();
+    return n;
+  }
+
+  if (consume_punct("(")) {
+    Node *node = parse_expr();
+    expect_punct(")");
+    return node;
+  }
+
+  Token *t;
+  if ((t = consume(TK_NUM)))
+    return new_num(t->val);
+
+  if ((t = consume(TK_STR))) {
+    Node *n = node_new(ND_STR);
+    n->str = t->str;
+    n->str_len = t->str_len;
+    return n;
+  }
+
+  if ((t = consume(TK_IDENT))) {
+    Node *n = node_new(ND_VAR);
+    n->name = t->name;
+    /* FIXME: no symbol table yet, var nodes resolve at codegen time */
+    return n;
+  }
+
+  error_at(tok->loc, "expected expression");
+}
+
+/* -------- declarations -------- */
+
+/* "name", "*name", "name[N]", plus an optional initializer.
+ * parens in declarators come with function types */
 static Node *parse_declarator(Type *base) {
   while (consume_punct("*"))
     base = ptr_to(base);
@@ -103,6 +492,12 @@ static Node *parse_declarator(Type *base) {
   Node *n = node_new(ND_DECL);
   n->name = ident->name;
   n->type = base;
+
+  if (consume_punct("=")) {
+    if (is_punct("{"))
+      error_at(tok->loc, "aggregate initializers not implemented yet");
+    n->init = parse_assign();
+  }
   return n;
 }
 

@@ -41,6 +41,26 @@ static Token *tok_new(TokenKind kind, char *start, int len) {
   return t;
 }
 
+/* decodes one escape sequence; pp points at the backslash, advanced past it */
+static char decode_escape(char *start, char **pp) {
+  char *p = *pp;
+  p++;
+  char c = 0;
+  switch (*p) {
+    case 'n':  c = '\n'; break;
+    case 't':  c = '\t'; break;
+    case 'r':  c = '\r'; break;
+    case '0':  c = '\0'; break;
+    case '\\': c = '\\'; break;
+    case '\'': c = '\''; break;
+    case '"':  c = '"';  break;
+    default:
+      error_at(start, "unknown escape sequence '\\%c'", *p);
+  }
+  *pp = p + 1;
+  return c;
+}
+
 Token *tokenize(char *p) {
   Token head = {0};
   Token *cur = &head;
@@ -111,18 +131,7 @@ Token *tokenize(char *p) {
           buf = xrealloc(buf, cap);
         }
         if (*p == '\\') {
-          p++;
-          switch (*p) {
-            case 'n':  buf[n++] = '\n'; break;
-            case 't':  buf[n++] = '\t'; break;
-            case 'r':  buf[n++] = '\r'; break;
-            case '0':  buf[n++] = '\0'; break;
-            case '\\': buf[n++] = '\\'; break;
-            case '"':  buf[n++] = '"';  break;
-            default:
-              error_at(start, "unknown escape sequence '\\%c'", *p);
-          }
-          p++;
+          buf[n++] = decode_escape(start, &p);
         } else {
           buf[n++] = *p++;
         }
@@ -133,6 +142,28 @@ Token *tokenize(char *p) {
       t->str = buf;
       t->str[n] = '\0';
       t->str_len = n;
+      cur = cur->next = t;
+      continue;
+    }
+
+    if (*p == '\'') {
+      char *start = p;
+      p++;
+      if (*p == '\0' || *p == '\n' || *p == '\'')
+        error_at(start, "empty char literal");
+      int c;
+      if (*p == '\\')
+        c = decode_escape(start, &p);
+      else {
+        c = *p;
+        p++;
+      }
+      if (*p != '\'')
+        error_at(start, "multi-char constants not supported");
+      p++;
+
+      Token *t = tok_new(TK_NUM, start, p - start);
+      t->val = c;
       cur = cur->next = t;
       continue;
     }

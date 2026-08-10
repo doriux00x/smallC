@@ -27,6 +27,110 @@ static void dump_type(Type *t) {
   }
 }
 
+static void indent(int d) {
+  for (int i = 0; i < d; i++)
+    printf("  ");
+}
+
+static const char *op_name(int op) {
+  switch (op) {
+    case OP_SHL: return "<<";
+    case OP_SHR: return ">>";
+    case OP_EQ:  return "==";
+    case OP_NE:  return "!=";
+    case OP_LE:  return "<=";
+    case OP_GE:  return ">=";
+    case OP_LOGAND: return "&&";
+    case OP_LOGOR:  return "||";
+    case OP_ADD_ASSIGN: return "+=";
+    case OP_SUB_ASSIGN: return "-=";
+    case OP_MUL_ASSIGN: return "*=";
+    case OP_DIV_ASSIGN: return "/=";
+    case OP_MOD_ASSIGN: return "%=";
+    case OP_SHL_ASSIGN: return "<<=";
+    case OP_SHR_ASSIGN: return ">>=";
+    case OP_AND_ASSIGN: return "&=";
+    case OP_OR_ASSIGN:  return "|=";
+    case OP_XOR_ASSIGN: return "^=";
+    case OP_INC: return "++";
+    case OP_DEC: return "--";
+    case '+': return "+";
+    case '-': return "-";
+    case '*': return "*";
+    case '/': return "/";
+    case '%': return "%";
+    case '&': return "&";
+    case '|': return "|";
+    case '^': return "^";
+    case '~': return "~";
+    case '!': return "!";
+    case '<': return "<";
+    case '>': return ">";
+    case '=': return "=";
+  }
+  return "?";
+}
+
+static void dump_expr(Node *n, int d) {
+  indent(d);
+  switch (n->kind) {
+    case ND_NUM:
+      printf("num %d\n", n->val);
+      return;
+    case ND_STR:
+      printf("str len=%d \"%s\"\n", n->str_len, n->str);
+      return;
+    case ND_VAR:
+      printf("var %s\n", n->name);
+      return;
+    case ND_ASSIGN:
+      printf("assign %s\n", op_name(n->op));
+      dump_expr(n->lhs, d + 1);
+      dump_expr(n->rhs, d + 1);
+      return;
+    case ND_BIN:
+      printf("bin %s\n", op_name(n->op));
+      dump_expr(n->lhs, d + 1);
+      dump_expr(n->rhs, d + 1);
+      return;
+    case ND_UNARY:
+      printf("un %s\n", op_name(n->op));
+      dump_expr(n->lhs, d + 1);
+      return;
+    case ND_COND:
+      printf("cond\n");
+      dump_expr(n->cond, d + 1);
+      dump_expr(n->then, d + 1);
+      dump_expr(n->els, d + 1);
+      return;
+    case ND_CALL:
+      printf("call\n");
+      dump_expr(n->lhs, d + 1);
+      for (Node *a = n->args; a; a = a->next)
+        dump_expr(a, d + 1);
+      return;
+    case ND_INDEX:
+      printf("index\n");
+      dump_expr(n->lhs, d + 1);
+      dump_expr(n->rhs, d + 1);
+      return;
+    case ND_MEMBER:
+      printf("member %s%s\n", n->is_pntr ? "->" : ".", n->name);
+      dump_expr(n->lhs, d + 1);
+      return;
+    case ND_SIZEOF:
+      if (n->lhs) {
+        printf("sizeof\n");
+        dump_expr(n->lhs, d + 1);
+      } else {
+        printf("sizeof type = %d bytes\n", n->targ->size);
+      }
+      return;
+    default:
+      printf("<unknown node %d>\n", n->kind);
+  }
+}
+
 static void usage(void) {
   fprintf(stderr, "usage: smallcc [-t] <file.c>\n");
   exit(1);
@@ -71,7 +175,12 @@ int main(int argc, char **argv) {
   for (Node *n = root; n; n = n->next) {
     printf("%-16s %2d bytes : ", n->name, n->type->size);
     dump_type(n->type);
-    printf("\n");
+    if (n->init) {
+      printf(" =\n");
+      dump_expr(n->init, 2);
+    } else {
+      printf("\n");
+    }
     count++;
   }
   printf("%d declaration(s)\n", count);

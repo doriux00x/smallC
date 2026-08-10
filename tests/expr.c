@@ -1,0 +1,30 @@
+/* initializers; exercises the expression grammar top to bottom */
+
+int a = 1 + 2 * 3 + 4;
+int b = (1 + 2) * 3;
+int c = -5 + +6 - -7;
+int d = ~0 & 0xff;
+int e = 1 << 4;
+int f = 64 >> 2 + 1;
+int g = !0;
+int h = 1 == 1 || 0 != 1 && 5;
+int i = 5 & 3 | 4 ^ 2;
+int j = 2 + 3 * 4 < 20 ? 10 : 20;
+int k = (2 + 3) * 4 < 20 ? 10 : 20;
+int l = a += 2;
+int m = b *= 3 + 4;
+int n = sizeof(int);
+int o = sizeof(char *);
+int p = sizeof(void *);
+int q = sizeof a;
+int r = 1 << 2 + 1;
+int s = x = y = 5;
+int t = a++, u = --a;
+char c1 = 'x';
+char nl = '\n';
+char *msg = "hello";
+int call = fact(1, 2, 3);
+int idx = arr[2];
+int mem = obj.field, mptr = p->field;
+int multi = 1, second = 2, third = 3;
+unsigned bits = ~0 & 0xffff;
