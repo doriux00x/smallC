@@ -1,6 +1,10 @@
-// double support: literals, arithmetic, conversions and SysV
-// SSE calling conventions, executed end to end
+// double/float support: literals, arithmetic, conversions, casts and
+// SysV SSE calling conventions, executed end to end
 double twice(double x) { return x * 2; }
+
+float half2(float x) { return x / 2; }
+
+float mixf(float a, int b, double c) { return a + b + c; }
 
 // mixed int/double arguments, all four register classes
 double add4(int a, double b, int c, double d) {
@@ -69,6 +73,12 @@ int main() {
   for (double j = 0; j < 2.0; j++)
     acc += 1.0;
   if (acc != 2.5) return 25;
+  double dec = 4.5;
+  dec--;
+  if (dec != 3.5) return 60;
+  double pre = dec--;
+  if (pre != 3.5) return 61;
+  if (dec != 2.5) return 62;
 
   // nested double expressions must not clobber the operands
   double r = add4(1, 2.0, 3, 4.0);
@@ -76,6 +86,62 @@ int main() {
   r = -r * 2.0;
   if (r != -20.0) return 27;
   if (r + neg2(1.5, 4) != -17.5) return 28;
+
+  // casts
+  if ((int)2.9 != 2) return 29;
+  if ((int)2.5f != 2) return 30;
+  if ((double)3 != 3.0) return 31;
+  if ((float)2.75 != 2.75f) return 32;
+  if ((float)1 != 1.0f) return 33;
+  if ((double)(int)3.5 != 3.0) return 34;
+
+  // float: literals, arithmetic, conversions
+  float f = 1.5f;
+  if (f != 1.5f) return 35;
+  f = f + 0.25f;
+  if (f != 1.75f) return 36;
+  f = f * 2.0f;
+  if (f != 3.5f) return 37;
+  f = half2(3.0f);
+  if (f != 1.5f) return 38;
+  f = 1.5f + 2;
+  if (f != 3.5f) return 39;
+  double dd = f;
+  if (dd != 3.5) return 40;
+  f = (float)dd;
+  if (f != 3.5f) return 41;
+  int ii = (int)f;
+  if (ii != 3) return 42;
+  f = (float)ii;
+  if (f != 3.0f) return 43;
+  float g = 1;
+  if (g != 1.0f) return 44;
+  if (!g) return 45;
+  if (!(g && 1.0f)) return 46;
+  if (!(0.0f || g)) return 47;
+  g += 2.5f;
+  if (g != 3.5f) return 48;
+  g++;
+  if (g != 4.5f) return 49;
+  g--;
+  if (g != 3.5f) return 50;
+  if (!(f < g)) return 51;
+  float h = -g;
+  if (h != -3.5f) return 52;
+  float arr[2];
+  arr[0] = 1.5f;
+  arr[1] = 2.5f;
+  if (arr[0] + arr[1] != 4.0f) return 53;
+  float *pf = &arr[1];
+  if (*pf != 2.5f) return 54;
+  int t = 1.5f ? 3 : 4;
+  if (t != 3) return 55;
+  if (mixf(1.5f, 2, 3.5) != 7.0f) return 56;
+  if (sizeof(float) != 4) return 57;
+  f = 1f;
+  if (f != 1.0f) return 58;
+  while (g > 0.5f) { g -= 1.0f; }
+  if (g != 0.5f) return 59;
 
   printf("float ok\n");
   return 0;

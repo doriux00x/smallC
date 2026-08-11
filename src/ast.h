@@ -94,7 +94,8 @@ struct Node {
   char *str;                   /* ND_STR decoded contents */
   int str_len;
   int val;                     /* ND_NUM, int value */
-  int is_float;                /* ND_NUM: double value in fval */
+  int is_float;                /* ND_NUM: floating value in fval */
+  int is_f;                    /* ND_NUM: the f/F suffix, a float literal */
   double fval;                 /* ND_NUM, float value */
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */

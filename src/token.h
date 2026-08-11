@@ -23,7 +23,8 @@ struct Token {
   TokenKind kind;
   Token *next;
   int val;       /* numeric value when TK_NUM and not is_float */
-  int is_float;  /* TK_NUM: double literal */
+  int is_float;  /* TK_NUM: floating literal */
+  int is_f;      /* TK_NUM: the f/F suffix, a float (not double) literal */
   double fval;   /* TK_NUM float value */
   char *loc;     /* start of token in source buffer */
   int len;       /* byte length of token text */

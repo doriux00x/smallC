@@ -432,6 +432,19 @@ static Node *parse_unary(void) {
   if (consume_punct("*")) return new_unary('*', parse_unary());
   if (consume_punct("&")) return new_unary('&', parse_unary());
 
+  /* (typename) cast; the lookahead mirrors sizeof: a type keyword
+   * right after '(' can never start a parenthesized expression */
+  if (is_punct("(") && tok->next && is_typespec_start(tok->next)) {
+    tok = tok->next;
+    char *dummy;
+    Type *ty = declarator(parse_typespec(), &dummy);
+    expect_punct(")");
+    Node *n = node_new(ND_CAST);
+    n->targ = ty;
+    n->lhs = parse_unary();
+    return n;
+  }
+
   int op = to_op();
   if (op == OP_INC || op == OP_DEC) {
     tok = tok->next;
@@ -540,6 +553,7 @@ static Node *parse_primary(void) {
     Node *n = node_new(ND_NUM);
     if (t->is_float) {
       n->is_float = 1;
+      n->is_f = t->is_f;
       n->fval = t->fval;
     } else {
       n->val = t->val;

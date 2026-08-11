@@ -1,4 +1,5 @@
-// double support: literals, arithmetic, conversions, comparisons
+// double/float support: literals, arithmetic, conversions, comparisons,
+// casts
 // (dump mode: front end + sema only)
 
 int main() {
@@ -46,6 +47,14 @@ int main() {
   i = d + 1;
   d = i;
   d = i + 1.5;
+  d = (double)i;
+  d = (int)2.9;
+  i = (double)3;
+  i = (int)(d + 1.5);
+  i = (int)2.5f;
+  d = (float)d;
+  d = (float)i;
+  d = (double)1.5f;
   double *p = &d;
   d = *p;
   *p = 1.5;
@@ -55,5 +64,48 @@ int main() {
   a[0] = 1.5;
   d = a[0];
   d = sizeof(double);
+  d = sizeof(float);
+
+  float f = 1.5f;
+  f = f + 0.25f;
+  f = f * 2.0f / 2;
+  f = 1.5f + 2;
+  f = 2 + 1.5f;
+  f = 1.5f + 2.5;
+  f = -f;
+  f = !f;
+  f = !0.0f;
+  f = f < 3.5f;
+  f = f >= 3.5;
+  f = f == 3.5f;
+  f = f != 3.5f;
+  f = f && 1.5f;
+  f = 0.0f || f;
+  f = 1.5f ? 3.5f : 4.5f;
+  f = 2 ? 1.5f : 2.5f;
+  f += 1.5f;
+  f -= 1.5f;
+  f *= 2;
+  f /= 4.0f;
+  f++;
+  ++f;
+  f--;
+  --f;
+  i = f;
+  f = i;
+  d = f;
+  f = d;
+  f = (float)d;
+  f = (float)2.75;
+  f = 1f;
+  float *pf = &f;
+  f = *pf;
+  *pf = 1.5f;
+  f = pf[0];
+  pf[0] = 2.5f;
+  float fa[4];
+  fa[0] = 1.5f;
+  f = fa[0];
+  f = sizeof(float);
   return 0;
 }

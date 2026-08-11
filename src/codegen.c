@@ -95,14 +95,12 @@ static int roundup(int n, int m) {
 }
 
 static void check_type_supported(Type *t) {
-  /* doubles use SSE; the 4-byte float type still has no backend */
-  static Type *marked;   /* chain of structs being walked, so
-                          * self-referential ones terminate */
+  /* guard against infinite recursion on self-referential structs;
+   * members are handled via the mark chain, so self-referential
+   * ones terminate */
+  static Type *marked;   /* chain of structs being walked */
   for (;;) {
     switch (t->kind) {
-      case TY_FLOAT:
-        error("float not implemented, use double");
-        return;
       case TY_PTR:
       case TY_ARRAY:
         t = t->base;
@@ -137,14 +135,26 @@ static Type *result_type(Type *a, Type *b) {
   return t;
 }
 
+static int is_real(Type *t) {
+  return t->kind == TY_FLOAT || t->kind == TY_DOUBLE;
+}
+
+/* the common real type of two operands: any double operand wins,
+ * otherwise everything stays float (C's usual arithmetic
+ * conversions) */
+static Type *real_type(Type *a, Type *b) {
+  return (a->kind == TY_DOUBLE || b->kind == TY_DOUBLE) ?
+         type_new(TY_DOUBLE) : type_new(TY_FLOAT);
+}
+
 static void resolve_expr(Node *n);
 
-/* wrap a value conversion; the backend knows int->double
- * (cvtsi2sd) and double->int (cvttsd2si) only */
+/* wrap a value conversion; the backend knows int<->double,
+ * int<->float and float<->double only */
 static Node *cast_of(Node *n, Type *to) {
-  if (n->type->kind == TY_DOUBLE && to->kind == TY_DOUBLE)
+  if (n->type->kind == to->kind)
     return n;
-  if (n->type->kind != TY_DOUBLE && to->kind != TY_DOUBLE)
+  if (!is_real(n->type) && !is_real(to))
     return n;
   Node *c = xmalloc(sizeof(Node));
   c->kind = ND_CAST;
@@ -155,7 +165,10 @@ static Node *cast_of(Node *n, Type *to) {
 }
 
 static void resolve_num(Node *n) {
-  n->type = n->is_float ? type_new(TY_DOUBLE) : type_new(TY_INT);
+  if (n->is_float)
+    n->type = n->is_f ? type_new(TY_FLOAT) : type_new(TY_DOUBLE);
+  else
+    n->type = type_new(TY_INT);
 }
 
 static void resolve_bin(Node *n) {
@@ -165,18 +178,19 @@ static void resolve_bin(Node *n) {
   Type *l = n->lhs->type;
   Type *r = n->rhs->type;
 
-  /* usual arithmetic conversions: any double operand drags the
-   * integer side up as a cast; % and the bitwise/shift ops have
-   * no double form at all */
-  int dbl = l->kind == TY_DOUBLE || r->kind == TY_DOUBLE;
-  if (dbl) {
+  /* usual arithmetic conversions: any floating operand drags the
+   * integer side up as a cast to the wider float type; % and the
+   * bitwise/shift ops have no floating form at all */
+  int fp = is_real(l) || is_real(r);
+  if (fp) {
     if (n->op == '%' || n->op == '&' || n->op == '|' ||
         n->op == '^' || n->op == OP_SHL || n->op == OP_SHR)
       error("invalid operands to binary operator");
-    if (l->kind != TY_DOUBLE)
-      n->lhs = cast_of(n->lhs, type_new(TY_DOUBLE));
-    else if (r->kind != TY_DOUBLE)
-      n->rhs = cast_of(n->rhs, type_new(TY_DOUBLE));
+    Type *real = real_type(l, r);
+    if (l->kind != real->kind)
+      n->lhs = cast_of(n->lhs, real);
+    if (r->kind != real->kind)
+      n->rhs = cast_of(n->rhs, real);
   }
 
   switch (n->op) {
@@ -198,13 +212,13 @@ static void resolve_bin(Node *n) {
         n->type = r;
         return;
       }
-      n->type = dbl ? type_new(TY_DOUBLE) : result_type(l, r);
+      n->type = fp ? real_type(l, r) : result_type(l, r);
       return;
     case '*':
     case '/':
       if (l->kind == TY_PTR || r->kind == TY_PTR)
         error("invalid operands to binary operator");
-      n->type = dbl ? type_new(TY_DOUBLE) : result_type(l, r);
+      n->type = fp ? real_type(l, r) : result_type(l, r);
       return;
     case '%':
     case '&':
@@ -248,7 +262,7 @@ static void resolve_unary(Node *n) {
       n->type = type_new(TY_INT);
       return;
     case '~':
-      if (ot->kind == TY_DOUBLE)
+      if (is_real(ot))
         error("invalid operands to binary operator");
       n->type = ot;
       return;
@@ -262,12 +276,14 @@ static void resolve_cond(Node *n) {
   resolve_expr(n->cond);
   resolve_expr(n->then);
   resolve_expr(n->els);
-  if (n->then->type->kind == TY_DOUBLE &&
-      n->els->type->kind != TY_DOUBLE)
-    n->els = cast_of(n->els, type_new(TY_DOUBLE));
-  else if (n->then->type->kind != TY_DOUBLE &&
-           n->els->type->kind == TY_DOUBLE)
-    n->then = cast_of(n->then, type_new(TY_DOUBLE));
+  /* the branches join at the wider floating type */
+  if (is_real(n->then->type) || is_real(n->els->type)) {
+    Type *real = real_type(n->then->type, n->els->type);
+    if (n->then->type->kind != real->kind)
+      n->then = cast_of(n->then, real);
+    if (n->els->type->kind != real->kind)
+      n->els = cast_of(n->els, real);
+  }
   n->type = n->then->type;
 }
 
@@ -320,14 +336,11 @@ static void resolve_expr(Node *n) {
         error("struct assignment not implemented");
       if (lt->kind == TY_ARRAY || lt->kind == TY_FUNC)
         error("can't assign to an array or function");
-      if (n->op != '=' && lt->kind != TY_DOUBLE &&
-          n->rhs->type->kind == TY_DOUBLE)
+      if (n->op != '=' && !is_real(lt) && is_real(n->rhs->type))
         error("unsupported compound assignment");
-      if (lt->kind == TY_DOUBLE &&
-          n->rhs->type->kind != TY_DOUBLE)
-        n->rhs = cast_of(n->rhs, type_new(TY_DOUBLE));
-      else if (lt->kind != TY_DOUBLE &&
-               n->rhs->type->kind == TY_DOUBLE)
+      if (is_real(lt) && lt->kind != n->rhs->type->kind)
+        n->rhs = cast_of(n->rhs, lt);
+      else if (!is_real(lt) && is_real(n->rhs->type))
         n->rhs = cast_of(n->rhs, lt);
       if (n->op != '=' && lt->kind == TY_PTR &&
           n->op != OP_ADD_ASSIGN && n->op != OP_SUB_ASSIGN)
@@ -343,6 +356,11 @@ static void resolve_expr(Node *n) {
       return;
     case ND_COND:
       resolve_cond(n);
+      return;
+    case ND_CAST:
+      resolve_expr(n->lhs);
+      check_type_supported(n->targ);
+      n->type = n->targ;
       return;
     case ND_CALL: {
       Node *callee = n->lhs;
@@ -423,11 +441,9 @@ static void resolve_stmt(Node *n) {
       n->var = o;
       if (n->init) {
         resolve_expr(n->init);
-        if (n->type->kind == TY_DOUBLE &&
-            n->init->type->kind != TY_DOUBLE)
-          n->init = cast_of(n->init, type_new(TY_DOUBLE));
-        else if (n->type->kind != TY_DOUBLE &&
-                 n->init->type->kind == TY_DOUBLE)
+        if (is_real(n->type) && n->type->kind != n->init->type->kind)
+          n->init = cast_of(n->init, n->type);
+        else if (!is_real(n->type) && is_real(n->init->type))
           n->init = cast_of(n->init, n->type);
         if (n->type->kind == TY_STRUCT)
           error("struct initializers not implemented");
@@ -467,11 +483,9 @@ static void resolve_stmt(Node *n) {
     case ND_RETURN:
       if (n->lhs) {
         resolve_expr(n->lhs);
-        if (cur_ret->kind == TY_DOUBLE &&
-            n->lhs->type->kind != TY_DOUBLE)
-          n->lhs = cast_of(n->lhs, type_new(TY_DOUBLE));
-        else if (cur_ret->kind != TY_DOUBLE &&
-                 n->lhs->type->kind == TY_DOUBLE)
+        if (is_real(cur_ret) && cur_ret->kind != n->lhs->type->kind)
+          n->lhs = cast_of(n->lhs, cur_ret);
+        else if (!is_real(cur_ret) && is_real(n->lhs->type))
           n->lhs = cast_of(n->lhs, cur_ret);
       }
       return;
@@ -574,6 +588,29 @@ static void section(char *s) {
 static double consts[256];
 static int consts_n;
 
+/* float constants get their own pool: the bits are half the width,
+ * and the labels must not collide with the double ones */
+static float fconsts[256];
+static int fconsts_n;
+
+static void emit_constf(float f) {
+  for (int i = 0; i < fconsts_n; i++)
+    if (fconsts[i] == f) {
+      fprintf(out, "  movss .LCf%d(%%rip), %%xmm0\n", i);
+      return;
+    }
+  if (fconsts_n == 256)
+    error("too many floating point constants");
+  fconsts[fconsts_n] = f;
+  unsigned bits;
+  memcpy(&bits, &f, 4);
+  fprintf(out, "  movss .LCf%d(%%rip), %%xmm0\n", fconsts_n);
+  section(".rodata");
+  fprintf(out, ".LCf%d:\n  .long 0x%x\n", fconsts_n, bits);
+  section(".text");
+  fconsts_n++;
+}
+
 static void emit_const(double d) {
   for (int i = 0; i < consts_n; i++)
     if (consts[i] == d) {
@@ -592,12 +629,16 @@ static void emit_const(double d) {
   consts_n++;
 }
 
-/* load the value at (%rax) into %rax (ints) or %xmm0 (doubles),
+/* load the value at (%rax) into %rax (ints) or %xmm0 (reals),
  * sign or zero extending to fit the declared type. this is where
  * signedness enters the register */
 static void load(Type *t) {
   if (t->kind == TY_DOUBLE) {
     fprintf(out, "  movsd (%%rax), %%xmm0\n");
+    return;
+  }
+  if (t->kind == TY_FLOAT) {
+    fprintf(out, "  movss (%%rax), %%xmm0\n");
     return;
   }
   switch (t->size) {
@@ -621,10 +662,14 @@ static void load(Type *t) {
   }
 }
 
-/* store %rax (ints) or %xmm0 (doubles) at (%rdi) */
+/* store %rax (ints) or %xmm0 (reals) at (%rdi) */
 static void store(Type *t) {
   if (t->kind == TY_DOUBLE) {
     fprintf(out, "  movsd %%xmm0, (%%rdi)\n");
+    return;
+  }
+  if (t->kind == TY_FLOAT) {
+    fprintf(out, "  movss %%xmm0, (%%rdi)\n");
     return;
   }
   switch (t->size) {
@@ -691,53 +736,67 @@ static void gen_addr(Node *n) {
   }
 }
 
+/* combine the real values in xmm0 (lhs) and xmm1 (rhs); both
+ * operands are the same kind after resolve's promotions */
+static void emit_fp_combine(int op, int is_dbl) {
+  const char *mv = is_dbl ? "movsd" : "movss";
+  const char *cmp = is_dbl ? "ucomisd" : "ucomiss";
+
+  switch (op) {
+    case '+':   fprintf(out, "  add%s %%xmm1, %%xmm0\n", is_dbl ? "sd" : "ss"); return;
+    case '-':   fprintf(out, "  sub%s %%xmm1, %%xmm0\n", is_dbl ? "sd" : "ss"); return;
+    case '*':   fprintf(out, "  mul%s %%xmm1, %%xmm0\n", is_dbl ? "sd" : "ss"); return;
+    case '/':   fprintf(out, "  div%s %%xmm1, %%xmm0\n", is_dbl ? "sd" : "ss"); return;
+    case OP_LOGAND:
+    case OP_LOGOR: {
+      /* no short-circuiting; normalize both to 0/1 in int regs */
+      fprintf(out, "  %s %%xmm0, %%xmm3\n", mv);
+      fprintf(out, "  %s %%xmm1, %%xmm4\n", mv);
+      if (is_dbl)
+        emit_const(0.0);
+      else
+        emit_constf(0.0f);
+      fprintf(out, "  %s %%xmm0, %%xmm2\n", mv);
+      fprintf(out, "  %s %%xmm2, %%xmm3\n", cmp);
+      fprintf(out, "  setne %%al\n");
+      fprintf(out, "  movzbq %%al, %%rax\n");
+      fprintf(out, "  %s %%xmm2, %%xmm4\n", cmp);
+      fprintf(out, "  setne %%dl\n");
+      fprintf(out, "  movzbq %%dl, %%rdx\n");
+      fprintf(out, "  %s %%rdx, %%rax\n",
+              op == OP_LOGAND ? "and" : "or");
+      return;
+    }
+    default: {   /* comparisons */
+      char *set;
+      switch (op) {
+        case '<':   set = "setb";  break;
+        case '>':   set = "seta";  break;
+        case OP_LE: set = "setbe"; break;
+        case OP_GE: set = "setae"; break;
+        case OP_EQ: set = "sete";  break;
+        default:    set = "setne"; break;
+      }
+      /* ucomisd %xmm1, %xmm0 sets flags per (xmm0 vs xmm1):
+       * a<b -> CF, a==b -> ZF. unordered NaN operands look like
+       * "less than" here, same as most compilers without
+       * -ffast-math ever caring */
+      fprintf(out, "  %s %%xmm1, %%xmm0\n", cmp);
+      fprintf(out, "  %s %%al\n", set);
+      fprintf(out, "  movzbq %%al, %%rax\n");
+      return;
+    }
+  }
+}
+
 /* combine %rax/%xmm0 (lhs) with %rdi/%xmm1 (rhs), result in
- * %rax (ints) or %xmm0 (doubles, promotions done in resolve).
+ * %rax (ints) or %xmm0 (reals, promotions done in resolve).
  * pointers get their integer operand scaled on the way in */
 static void emit_combine(int op, Type *lhs_ty, Type *rhs_ty) {
-  if (lhs_ty->kind == TY_DOUBLE || rhs_ty->kind == TY_DOUBLE) {
-    switch (op) {
-      case '+':   fprintf(out, "  addsd %%xmm1, %%xmm0\n"); return;
-      case '-':   fprintf(out, "  subsd %%xmm1, %%xmm0\n"); return;
-      case '*':   fprintf(out, "  mulsd %%xmm1, %%xmm0\n"); return;
-      case '/':   fprintf(out, "  divsd %%xmm1, %%xmm0\n"); return;
-      case OP_LOGAND:
-      case OP_LOGOR: {
-        /* no short-circuiting; normalize both to 0/1 in int regs */
-        fprintf(out, "  movsd %%xmm0, %%xmm3\n");
-        fprintf(out, "  movsd %%xmm1, %%xmm4\n");
-        emit_const(0.0);
-        fprintf(out, "  movsd %%xmm0, %%xmm2\n");
-        fprintf(out, "  ucomisd %%xmm2, %%xmm3\n");
-        fprintf(out, "  setne %%al\n");
-        fprintf(out, "  movzbq %%al, %%rax\n");
-        fprintf(out, "  ucomisd %%xmm2, %%xmm4\n");
-        fprintf(out, "  setne %%dl\n");
-        fprintf(out, "  movzbq %%dl, %%rdx\n");
-        fprintf(out, "  %s %%rdx, %%rax\n",
-                op == OP_LOGAND ? "and" : "or");
-        return;
-      }
-      default: {   /* comparisons */
-        char *set;
-        switch (op) {
-          case '<':   set = "setb";  break;
-          case '>':   set = "seta";  break;
-          case OP_LE: set = "setbe"; break;
-          case OP_GE: set = "setae"; break;
-          case OP_EQ: set = "sete";  break;
-          default:    set = "setne"; break;
-        }
-        /* ucomisd %xmm1, %xmm0 sets flags per (xmm0 vs xmm1):
-         * a<b -> CF, a==b -> ZF. unordered NaN operands look like
-         * "less than" here, same as most compilers without
-         * -ffast-math ever caring */
-        fprintf(out, "  ucomisd %%xmm1, %%xmm0\n");
-        fprintf(out, "  %s %%al\n", set);
-        fprintf(out, "  movzbq %%al, %%rax\n");
-        return;
-      }
-    }
+  if (is_real(lhs_ty) || is_real(rhs_ty)) {
+    emit_fp_combine(op, lhs_ty->kind == TY_DOUBLE ||
+                        rhs_ty->kind == TY_DOUBLE);
+    return;
   }
 
   int size = 0;
@@ -840,13 +899,15 @@ static void gen_call(Node *n) {
 
   /* SysV: ints go to rdi..r9, doubles to xmm0..7, each class counted
    * independently and in argument order; anything past the budget
-   * lands on the stack, still in argument order */
+   * lands on the stack, still in argument order. float operands are
+   * promoted to double here, so a float parameter is a double on the
+   * wire (our own convention, both sides agree) */
   static char *intregs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
   int nsse = 0;
   {
     int ireg = 0, sreg = 0;
     for (i = 0; i < nargs; i++)
-      if (args[i]->type->kind == TY_DOUBLE) {
+      if (is_real(args[i]->type)) {
         if (sreg < 8) { sreg++; nsse++; }
       } else if (ireg < 6) {
         ireg++;
@@ -863,7 +924,9 @@ static void gen_call(Node *n) {
   /* evaluate right-to-left, one 8-byte slot per argument */
   for (i = nargs - 1; i >= 0; i--) {
     gen_expr(args[i]);
-    if (args[i]->type->kind == TY_DOUBLE) {
+    if (args[i]->type->kind == TY_FLOAT)
+      fprintf(out, "  cvtss2sd %%xmm0, %%xmm0\n");
+    if (is_real(args[i]->type)) {
       fprintf(out, "  sub $8, %%rsp\n");
       fprintf(out, "  movsd %%xmm0, (%%rsp)\n");
     } else {
@@ -875,7 +938,7 @@ static void gen_call(Node *n) {
    * arguments straight from there, preserving argument order */
   int ireg = 0, sreg = 0;
   for (i = 0; i < nargs; i++) {
-    if (args[i]->type->kind == TY_DOUBLE) {
+    if (is_real(args[i]->type)) {
       if (sreg < 8)
         fprintf(out, "  movsd %d(%%rsp), %%xmm%d\n", i * 8, sreg++);
     } else if (ireg < 6) {
@@ -889,12 +952,12 @@ static void gen_call(Node *n) {
   int ireg2 = 0, sreg2 = 0, stk = 0;
   for (i = 0; i < nargs; i++) {
     int is_stk;
-    if (args[i]->type->kind == TY_DOUBLE)
+    if (is_real(args[i]->type))
       is_stk = sreg2++ >= 8;
     else
       is_stk = ireg2++ >= 6;
     if (is_stk) {
-      if (args[i]->type->kind == TY_DOUBLE) {
+      if (is_real(args[i]->type)) {
         fprintf(out, "  movsd %d(%%rsp), %%xmm0\n", i * 8);
         fprintf(out, "  movsd %%xmm0, %d(%%rsp)\n", stk * 8);
       } else {
@@ -922,7 +985,14 @@ static void gen_call(Node *n) {
 /* evaluate a condition; jump to lbl when it is false */
 static void gen_cond_jump_false(Node *cond, int lbl) {
   gen_expr(cond);
-  if (cond->type->kind == TY_DOUBLE) {
+  if (cond->type->kind == TY_FLOAT) {
+    fprintf(out, "  movss %%xmm0, %%xmm2\n");
+    emit_constf(0.0f);
+    fprintf(out, "  movss %%xmm2, %%xmm1\n");
+    fprintf(out, "  ucomiss %%xmm1, %%xmm0\n");
+    fprintf(out, "  setne %%al\n");
+    fprintf(out, "  movzbq %%al, %%rax\n");
+  } else if (cond->type->kind == TY_DOUBLE) {
     fprintf(out, "  movsd %%xmm0, %%xmm2\n");
     emit_const(0.0);
     fprintf(out, "  movsd %%xmm2, %%xmm1\n");
@@ -937,7 +1007,14 @@ static void gen_cond_jump_false(Node *cond, int lbl) {
 /* evaluate a condition; jump to lbl when it is true */
 static void gen_cond_jump_true(Node *cond, int lbl) {
   gen_expr(cond);
-  if (cond->type->kind == TY_DOUBLE) {
+  if (cond->type->kind == TY_FLOAT) {
+    fprintf(out, "  movss %%xmm0, %%xmm2\n");
+    emit_constf(0.0f);
+    fprintf(out, "  movss %%xmm2, %%xmm1\n");
+    fprintf(out, "  ucomiss %%xmm1, %%xmm0\n");
+    fprintf(out, "  setne %%al\n");
+    fprintf(out, "  movzbq %%al, %%rax\n");
+  } else if (cond->type->kind == TY_DOUBLE) {
     fprintf(out, "  movsd %%xmm0, %%xmm2\n");
     emit_const(0.0);
     fprintf(out, "  movsd %%xmm2, %%xmm1\n");
@@ -952,10 +1029,14 @@ static void gen_cond_jump_true(Node *cond, int lbl) {
 static void gen_expr(Node *n) {
   switch (n->kind) {
     case ND_NUM:
-      if (n->is_float)
-        emit_const(n->fval);
-      else
+      if (n->is_float) {
+        if (n->is_f)
+          emit_constf((float)n->fval);
+        else
+          emit_const(n->fval);
+      } else {
         fprintf(out, "  mov $%d, %%rax\n", n->val);
+      }
       return;
     case ND_STR:
       emit_string(n);
@@ -986,13 +1067,14 @@ static void gen_expr(Node *n) {
         for (int m = 0; m < (int)(sizeof(map) / sizeof(map[0])); m++)
           if (map[m].from == n->op)
             op = map[m].to;
-        if (n->type->kind == TY_DOUBLE) {
-          /* double compound: park the rhs, then load the lhs */
+        if (is_real(n->type)) {
+          /* real compound: park the rhs, then load the lhs */
+          const char *mv = n->type->kind == TY_DOUBLE ? "movsd" : "movss";
           gen_expr(n->rhs);
           fprintf(out, "  sub $8, %%rsp\n");
-          fprintf(out, "  movsd %%xmm0, (%%rsp)\n");
+          fprintf(out, "  %s %%xmm0, (%%rsp)\n", mv);
           gen_expr(n->lhs);
-          fprintf(out, "  movsd (%%rsp), %%xmm1\n");
+          fprintf(out, "  %s (%%rsp), %%xmm1\n", mv);
           fprintf(out, "  add $8, %%rsp\n");
           emit_combine(op, n->lhs->type, n->rhs->type);
         } else {
@@ -1012,14 +1094,16 @@ static void gen_expr(Node *n) {
     }
     case ND_BIN:
       gen_expr(n->rhs);
-      if (n->lhs->type->kind == TY_DOUBLE ||
-          n->rhs->type->kind == TY_DOUBLE) {
+      if (is_real(n->lhs->type) || is_real(n->rhs->type)) {
         /* the rhs has to survive the lhs evaluation, which may itself
          * use the xmm registers, so park it on the stack */
+        const char *mv = n->lhs->type->kind == TY_DOUBLE ||
+                         n->rhs->type->kind == TY_DOUBLE ?
+                         "movsd" : "movss";
         fprintf(out, "  sub $8, %%rsp\n");
-        fprintf(out, "  movsd %%xmm0, (%%rsp)\n");
+        fprintf(out, "  %s %%xmm0, (%%rsp)\n", mv);
         gen_expr(n->lhs);
-        fprintf(out, "  movsd (%%rsp), %%xmm1\n");
+        fprintf(out, "  %s (%%rsp), %%xmm1\n", mv);
         fprintf(out, "  add $8, %%rsp\n");
       } else {
         fprintf(out, "  push %%rax\n");
@@ -1028,15 +1112,23 @@ static void gen_expr(Node *n) {
       }
       emit_combine(n->op, n->lhs->type, n->rhs->type);
       return;
-    case ND_CAST:
+    case ND_CAST: {
       gen_expr(n->lhs);
-      if (n->lhs->type->kind == TY_DOUBLE &&
-          n->targ->kind != TY_DOUBLE)
+      int fr = n->lhs->type->kind, to = n->targ->kind;
+      if (fr == TY_FLOAT && to == TY_DOUBLE)
+        fprintf(out, "  cvtss2sd %%xmm0, %%xmm0\n");
+      else if (fr == TY_DOUBLE && to == TY_FLOAT)
+        fprintf(out, "  cvtsd2ss %%xmm0, %%xmm0\n");
+      else if (fr == TY_FLOAT)
+        fprintf(out, "  cvttss2si %%xmm0, %%rax\n");
+      else if (to == TY_FLOAT)
+        fprintf(out, "  cvtsi2ss %%rax, %%xmm0\n");
+      else if (fr == TY_DOUBLE)
         fprintf(out, "  cvttsd2si %%xmm0, %%rax\n");
-      else if (n->lhs->type->kind != TY_DOUBLE &&
-               n->targ->kind == TY_DOUBLE)
+      else
         fprintf(out, "  cvtsi2sd %%rax, %%xmm0\n");
       return;
+    }
     case ND_UNARY:
       switch (n->op) {
         case '&':
@@ -1060,6 +1152,11 @@ static void gen_expr(Node *n) {
             emit_const(0.0);
             fprintf(out, "  movsd %%xmm2, %%xmm1\n");
             fprintf(out, "  subsd %%xmm1, %%xmm0\n");
+          } else if (n->type->kind == TY_FLOAT) {
+            fprintf(out, "  movss %%xmm0, %%xmm2\n");
+            emit_constf(0.0f);
+            fprintf(out, "  movss %%xmm2, %%xmm1\n");
+            fprintf(out, "  subss %%xmm1, %%xmm0\n");
           } else {
             fprintf(out, "  neg %%rax\n");
           }
@@ -1075,6 +1172,11 @@ static void gen_expr(Node *n) {
             emit_const(0.0);
             fprintf(out, "  movsd %%xmm2, %%xmm1\n");
             fprintf(out, "  ucomisd %%xmm1, %%xmm0\n");
+          } else if (n->lhs->type->kind == TY_FLOAT) {
+            fprintf(out, "  movss %%xmm0, %%xmm2\n");
+            emit_constf(0.0f);
+            fprintf(out, "  movss %%xmm2, %%xmm1\n");
+            fprintf(out, "  ucomiss %%xmm1, %%xmm0\n");
           } else {
             fprintf(out, "  cmp $0, %%rax\n");
           }
@@ -1091,18 +1193,38 @@ static void gen_expr(Node *n) {
           fprintf(out, "  push %%rax\n");          /* [addr] */
           load(n->type);
           if (n->type->kind == TY_DOUBLE) {
-            /* doubles go through xmm0; the old value is kept in
+            /* reals go through xmm0; the old value is kept in
              * xmm1 for the postfix result, and pointers step a
              * scaled constant */
             fprintf(out, "  movsd %%xmm0, %%xmm1\n");
             emit_const(1.0 * scale);
             fprintf(out, "  movsd %%xmm1, %%xmm2\n");
-            fprintf(out, "  %ssd %%xmm2, %%xmm0\n",
-                    n->op == OP_INC ? "add" : "sub");
+            if (n->op == OP_INC)
+              fprintf(out, "  addsd %%xmm2, %%xmm0\n");
+            else {
+              fprintf(out, "  subsd %%xmm0, %%xmm2\n");
+              fprintf(out, "  movsd %%xmm2, %%xmm0\n");
+            }
             fprintf(out, "  pop %%rdi\n");         /* addr */
             fprintf(out, "  movsd %%xmm0, (%%rdi)\n");
             if (!n->is_prefix)
               fprintf(out, "  movsd %%xmm1, %%xmm0\n");
+            return;
+          }
+          if (n->type->kind == TY_FLOAT) {
+            fprintf(out, "  movss %%xmm0, %%xmm1\n");
+            emit_constf(1.0f * scale);
+            fprintf(out, "  movss %%xmm1, %%xmm2\n");
+            if (n->op == OP_INC)
+              fprintf(out, "  addss %%xmm2, %%xmm0\n");
+            else {
+              fprintf(out, "  subss %%xmm0, %%xmm2\n");
+              fprintf(out, "  movss %%xmm2, %%xmm0\n");
+            }
+            fprintf(out, "  pop %%rdi\n");         /* addr */
+            fprintf(out, "  movss %%xmm0, (%%rdi)\n");
+            if (!n->is_prefix)
+              fprintf(out, "  movss %%xmm1, %%xmm0\n");
             return;
           }
           if (n->is_prefix) {
@@ -1376,11 +1498,23 @@ static void gen_func(Node *n) {
   /* spill the SysV registers into the param slots. ints arrive in
    * rdi..r9, doubles in xmm0..7, each class counted independently;
    * whatever overflows its budget sits on the stack in argument
-   * order, at 16(%rbp) and up */
+   * order, at 16(%rbp) and up. float parameters arrive as doubles
+   * (see gen_call) and are narrowed on the way in */
   static char *argreg[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
   int idx = 0, sse = 0, stk = 0;
   for (Node *p = n->type->params; p; p = p->next) {
-    if (p->var->type->kind == TY_DOUBLE) {
+    if (p->var->type->kind == TY_FLOAT) {
+      if (sse < 8)
+        fprintf(out, "  cvtsd2ss %%xmm%d, %%xmm%d\n"
+                     "  movss %%xmm%d, %d(%%rbp)\n",
+                sse, sse, sse, p->var->offset);
+      else
+        fprintf(out, "  movsd %d(%%rbp), %%xmm0\n"
+                     "  cvtsd2ss %%xmm0, %%xmm0\n"
+                     "  movss %%xmm0, %d(%%rbp)\n",
+                16 + stk * 8, p->var->offset);
+      sse++;
+    } else if (p->var->type->kind == TY_DOUBLE) {
       if (sse < 8)
         fprintf(out, "  movsd %%xmm%d, %d(%%rbp)\n", sse,
                 p->var->offset);

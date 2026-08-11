@@ -96,6 +96,14 @@ static Token *read_number(char *start, char **pp) {
     /* FIXME: strtol clamps on overflow, and we truncate to int */
     t->val = (int)strtol(p, &p, 0);
   }
+  if (*p == 'f' || *p == 'F') {
+    /* "1f" is the float 1.0f; strtod stops at the suffix */
+    if (!t->is_float)
+      t->fval = strtod(start, &p);
+    p++;
+    t->is_float = 1;
+    t->is_f = 1;
+  }
   t->len = p - start;
   *pp = p;
   return t;
@@ -164,7 +172,7 @@ Token *tokenize(char *p) {
       while (*p != '"') {
         if (*p == '\0' || *p == '\n')
           error_at(start, "unterminated string literal");
-        if (n == cap) {
+        if (n + 1 == cap) {
           cap *= 2;
           buf = xrealloc(buf, cap);
         }
