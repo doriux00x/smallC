@@ -93,6 +93,7 @@ static Tag *tags;
 
 static Type *parse_typespec(void);
 static Type *declarator(Type *base, char **name);
+static Node *parse_expr(void);
 
 static Type *find_tag(char *name) {
   for (Tag *t = tags; t; t = t->next)
@@ -135,6 +136,138 @@ static void register_typedef(char *name, Type *type) {
   typedefs = t;
 }
 
+/**
+ * enum support: TK_ENUM is currently lexed but unparsed. Enumerators
+ * become integer constants the parser knows at parse time (they have
+ * to feed array dims, case labels and global initializers), and an
+ * enum type is just an int, as the standard allows.
+ */
+
+/* enumerators live in their own parse-time namespace, like tags and
+ * typedef names; a use resolves to the constant immediately */
+typedef struct EnumConst EnumConst;
+struct EnumConst {
+  EnumConst *next;
+  char *name;
+  int val;
+};
+
+static EnumConst *enum_consts;
+
+static EnumConst *find_enum_const(char *name) {
+  for (EnumConst *e = enum_consts; e; e = e->next)
+    if (strcmp(e->name, name) == 0)
+      return e;
+  return NULL;
+}
+
+static void register_enum_const(char *name, int val) {
+  EnumConst *e = xmalloc(sizeof(EnumConst));
+  e->name = name;
+  e->val = val;
+  e->next = enum_consts;
+  enum_consts = e;
+}
+
+/* enum tags: names only, the type is always int */
+typedef struct EnumTag EnumTag;
+struct EnumTag {
+  EnumTag *next;
+  char *name;
+};
+
+static EnumTag *enum_tags;
+
+static int has_enum_tag(char *name) {
+  for (EnumTag *t = enum_tags; t; t = t->next)
+    if (strcmp(t->name, name) == 0)
+      return 1;
+  return 0;
+}
+
+static void register_enum_tag(char *name) {
+  EnumTag *t = xmalloc(sizeof(EnumTag));
+  t->name = name;
+  t->next = enum_tags;
+  enum_tags = t;
+}
+
+/* a constant expression, folded for enumerator values; everything
+ * else enumerated is not a constant */
+static int eval_const(Node *e) {
+  switch (e->kind) {
+  case ND_NUM:
+    if (e->is_float)
+      break;
+    return e->val;
+  case ND_UNARY:
+    switch (e->op) {
+    case '+': return eval_const(e->lhs);
+    case '-': return -eval_const(e->lhs);
+    case '~': return ~eval_const(e->lhs);
+    case '!': return !eval_const(e->lhs);
+    }
+    break;
+  case ND_BIN: {
+    int lhs = eval_const(e->lhs);
+    int rhs = eval_const(e->rhs);
+    switch (e->op) {
+    case '+': return lhs + rhs;
+    case '-': return lhs - rhs;
+    case '*': return lhs * rhs;
+    case '/':
+      if (!rhs)
+        error("division by zero");
+      return lhs / rhs;
+    case '%':
+      if (!rhs)
+        error("division by zero");
+      return lhs % rhs;
+    case '&': return lhs & rhs;
+    case '|': return lhs | rhs;
+    case '^': return lhs ^ rhs;
+    case OP_SHL: return lhs << rhs;
+    case OP_SHR: return lhs >> rhs;
+    case '<':  return lhs < rhs;
+    case '>':  return lhs > rhs;
+    case OP_LE: return lhs <= rhs;
+    case OP_GE: return lhs >= rhs;
+    case OP_EQ: return lhs == rhs;
+    case OP_NE: return lhs != rhs;
+    case OP_LOGAND: return lhs && rhs;
+    case OP_LOGOR:  return lhs || rhs;
+    }
+    break;
+  }
+  case ND_SIZEOF:
+    if (e->targ)
+      return type_size(e->targ);
+    if (e->lhs->type)
+      return type_size(e->lhs->type);
+    break;
+  default:
+    break;
+  }
+  error("enumerator value is not a constant");
+}
+
+/* enum { A, B = 5, ... }; values start at 0 and step by 1 unless
+ * "= <const expr>" is given */
+static void parse_enumerators(void) {
+  int value = 0;
+  for (;;) {
+    char *name = expect_ident("enumerator")->name;
+    if (consume_punct("="))
+      value = eval_const(parse_expr());
+    register_enum_const(name, value++);
+    if (!consume_punct(","))
+      break;
+    if (is_punct("}"))
+      break;   /* trailing comma, C11 allows it */
+  }
+  expect_punct("}");
+}
+
 static Member *parse_struct_members(void) {
   Member head = {0};
   Member **link = &head.next;
@@ -167,7 +300,7 @@ static int is_typespec_start(Token *t) {
   return t->kind == TK_VOID || t->kind == TK_CHAR || t->kind == TK_SHORT ||
          t->kind == TK_INT || t->kind == TK_LONG || t->kind == TK_SIGNED ||
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
-         t->kind == TK_DOUBLE || t->kind == TK_STRUCT ||
+         t->kind == TK_DOUBLE || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -188,6 +321,23 @@ static Type *parse_typespec(void) {
     if (consume(TK_INT))       { t = type_new(TY_INT);    continue; }
     if (consume(TK_FLOAT))     { t = type_new(TY_FLOAT);  continue; }
     if (consume(TK_DOUBLE))    { t = type_new(TY_DOUBLE); continue; }
+    if (consume(TK_ENUM)) {
+      char *tag = NULL;
+      if (at(TK_IDENT))
+        tag = expect(TK_IDENT, "enum tag")->name;
+      if (consume_punct("{")) {
+        /* the tag goes in before the body, so the body can
+         * reference it (sizeof(enum x)) */
+        if (tag)
+          register_enum_tag(tag);
+        parse_enumerators();
+      } else if (!tag) {
+        error_at(tok->loc, "expected enum tag");
+      } else if (!has_enum_tag(tag)) {
+        error_at(tok->loc, "unknown enum '%s'", tag);
+      }
+      return type_new(TY_INT);
+    }
     if (consume(TK_STRUCT)) {
       char *tag = NULL;
       if (at(TK_IDENT))
@@ -588,7 +738,6 @@ static Node *parse_postfix(void) {
 }
 
 static Node *parse_primary(void) {
-  /* no typedefs yet, so an ident after '(' can never be a type name */
   if (at(TK_SIZEOF)) {
     tok = tok->next;
     Type *ty = NULL;
@@ -634,9 +783,16 @@ static Node *parse_primary(void) {
   }
 
   if ((t = consume(TK_IDENT))) {
+    EnumConst *ec = find_enum_const(t->name);
+    if (ec) {
+      /* an enumerator is a compile-time int; it resolves here, so it
+       * works anywhere a constant is expected */
+      Node *n = node_new(ND_NUM);
+      n->val = ec->val;
+      return n;
+    }
     Node *n = node_new(ND_VAR);
     n->name = t->name;
-    /* FIXME: no symbol table yet, var nodes resolve at codegen time */
     return n;
   }
 
@@ -879,6 +1035,12 @@ static Type *suffix_loop(Type *t) {
       if (at(TK_NUM)) {
         len = tok->val;
         tok = tok->next;
+      } else if (at(TK_IDENT)) {
+        EnumConst *ec = find_enum_const(tok->name);
+        if (ec) {
+          len = ec->val;
+          tok = tok->next;
+        }
       }
       expect_punct("]");
       if (dim_n < 64)
