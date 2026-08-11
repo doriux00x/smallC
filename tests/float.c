@@ -1,6 +1,23 @@
 // double/float support: literals, arithmetic, conversions, comparisons,
-// casts
+// casts, global initializers
 // (dump mode: front end + sema only)
+
+double gd = 1.5;
+float gf = 1.5f;
+float gx = 1f;
+double ge = 1.5 + 2;
+double gmix = 1.5 * 2 - 0.5;
+double gneg = -2.5;
+double g1 = 1;
+int gi = 2.7;
+float gcast = (float)2.75;
+double gd2 = (double)3;
+double gfold = 1.5 ? 2.5 : 3.5;
+double gcmp = 1.5 < 2.5;
+double gnot = !0.0;
+double gbig = -1.5 * 3.0 / 2;
+double gerr;
+float gerrf;
 
 int main() {
   double d = 1.5;

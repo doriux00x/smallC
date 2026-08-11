@@ -6,6 +6,22 @@ float half2(float x) { return x / 2; }
 
 float mixf(float a, int b, double c) { return a + b + c; }
 
+// global initializers, folded at compile time
+double gd = 1.5;
+float gf = 1.5f;
+double ge = 1.5 + 2;
+double gmix = 1.5 * 2 - 0.5;
+double gneg = -2.5;
+double g1 = 1;
+int gi = 2.7;
+float gcast = (float)2.75;
+double gfold = 1.5 ? 2.5 : 3.5;
+double gcmp = 1.5 < 2.5;
+double gnot = !0.0;
+double gd2 = (double)3;
+double gbss;
+float gbssf;
+
 // mixed int/double arguments, all four register classes
 double add4(int a, double b, int c, double d) {
   return a + b + c + d;
@@ -142,6 +158,32 @@ int main() {
   if (f != 1.0f) return 58;
   while (g > 0.5f) { g -= 1.0f; }
   if (g != 0.5f) return 59;
+
+  // global initializers
+  if (gd != 1.5) return 63;
+  if (gf != 1.5f) return 64;
+  if (ge != 3.5) return 65;
+  if (gmix != 2.5) return 66;
+  if (gneg != -2.5) return 67;
+  if (g1 != 1.0) return 68;
+  if (gi != 2) return 69;
+  if (gcast != 2.75f) return 70;
+  if (gfold != 2.5) return 71;
+  if (gcmp != 1.0) return 72;
+  if (gnot != 1.0) return 73;
+  if (gd2 != 3.0) return 74;
+  if (gbss != 0.0) return 75;
+  if (gbssf != 0.0f) return 76;
+  gd = 9.25;
+  gf = 2.5f;
+  gd += gbss;
+  if (gd != 9.25) return 77;
+  gf *= 2;
+  if (gf != 5.0f) return 78;
+  double *gp = &gd;
+  *gp = 1.25;
+  if (gd != 1.25) return 79;
+  printf("%f %f\n", gd, gf + 1.5f);
 
   printf("float ok\n");
   return 0;

@@ -1404,60 +1404,124 @@ static void emit_string(Node *n) {
   section(".text");
 }
 
-/* constant folding for global initializers; only expressions that
- * are integers at compile time survive this far */
-static int const_fold(Node *n) {
+/* constant folding for global initializers. a folded value is either
+ * an integer or a double; the declared type of the object applies
+ * the final narrowing (a double global keeps the double bits, a float
+ * global rounds to float32, an int global truncates) */
+typedef struct {
+  int is_float;   /* the value lives in fval */
+  int val;
+  double fval;
+} CVal;
+
+static CVal cv_int(int v)   { CVal c = {0, v, 0};    return c; }
+static CVal cv_fp(double f) { CVal c = {1, 0, f};    return c; }
+
+static CVal const_fold(Node *n) {
   switch (n->kind) {
     case ND_NUM:
       if (n->is_float)
-        error("floating point global initializers not implemented");
-      return n->val;
+        return cv_fp(n->fval);
+      return cv_int(n->val);
     case ND_SIZEOF:
       if (n->lhs)
-        return type_size(n->lhs->type);
-      return type_size(n->targ);
+        return cv_int(type_size(n->lhs->type));
+      return cv_int(type_size(n->targ));
+    case ND_CAST:
+      if (n->targ->kind == TY_FLOAT || n->targ->kind == TY_DOUBLE) {
+        CVal c = const_fold(n->lhs);
+        return cv_fp(c.is_float ? c.fval : (double)c.val);
+      }
+      if (n->targ->kind == TY_PTR)
+        error("unsupported global initializer");
+      {
+        CVal c = const_fold(n->lhs);
+        return cv_int(c.is_float ? (int)c.fval : c.val);
+      }
     case ND_UNARY:
       switch (n->op) {
-        case '+': return const_fold(n->lhs);
-        case '-': return -const_fold(n->lhs);
-        case '~': return ~const_fold(n->lhs);
-        case '!': return !const_fold(n->lhs);
+        case '+': {
+          CVal c = const_fold(n->lhs);
+          return c;
+        }
+        case '-': {
+          CVal c = const_fold(n->lhs);
+          return c.is_float ? cv_fp(-c.fval) : cv_int(-c.val);
+        }
+        case '~': {
+          CVal c = const_fold(n->lhs);
+          if (c.is_float)
+            error("invalid operands to binary operator");
+          return cv_int(~c.val);
+        }
+        case '!': {
+          CVal c = const_fold(n->lhs);
+          return cv_int(c.is_float ? c.fval == 0 : !c.val);
+        }
         default: error("unsupported global initializer");
       }
     case ND_BIN: {
-      int l = const_fold(n->lhs);
-      int r = const_fold(n->rhs);
+      CVal l = const_fold(n->lhs);
+      CVal r = const_fold(n->rhs);
+      if (l.is_float || r.is_float) {
+        if (n->op == '%' || n->op == '&' || n->op == '|' ||
+            n->op == '^' || n->op == OP_SHL || n->op == OP_SHR)
+          error("invalid operands to binary operator");
+        double a = l.is_float ? l.fval : (double)l.val;
+        double b = r.is_float ? r.fval : (double)r.val;
+        switch (n->op) {
+          case '+': return cv_fp(a + b);
+          case '-': return cv_fp(a - b);
+          case '*': return cv_fp(a * b);
+          case '/':
+            if (b == 0)
+              error("division by zero in constant expression");
+            return cv_fp(a / b);
+          case OP_EQ:  return cv_int(a == b);
+          case OP_NE:  return cv_int(a != b);
+          case '<':    return cv_int(a < b);
+          case '>':    return cv_int(a > b);
+          case OP_LE:  return cv_int(a <= b);
+          case OP_GE:  return cv_int(a >= b);
+          case OP_LOGAND: return cv_int(a != 0 && b != 0);
+          case OP_LOGOR:  return cv_int(a != 0 || b != 0);
+          default: error("unsupported global initializer");
+        }
+      }
+      int lv = l.val, rv = r.val;
       switch (n->op) {
-        case '+': return l + r;
-        case '-': return l - r;
-        case '*': return l * r;
+        case '+': return cv_int(lv + rv);
+        case '-': return cv_int(lv - rv);
+        case '*': return cv_int(lv * rv);
         case '/':
-          if (r == 0)
+          if (rv == 0)
             error("division by zero in constant expression");
-          return l / r;
+          return cv_int(lv / rv);
         case '%':
-          if (r == 0)
+          if (rv == 0)
             error("division by zero in constant expression");
-          return l % r;
-        case '&':  return l & r;
-        case '|':  return l | r;
-        case '^':  return l ^ r;
-        case OP_SHL: return l << r;
-        case OP_SHR: return l >> r;
-        case OP_EQ:  return l == r;
-        case OP_NE:  return l != r;
-        case '<':  return l < r;
-        case '>':  return l > r;
-        case OP_LE: return l <= r;
-        case OP_GE: return l >= r;
-        case OP_LOGAND: return l && r;
-        case OP_LOGOR:  return l || r;
+          return cv_int(lv % rv);
+        case '&':  return cv_int(lv & rv);
+        case '|':  return cv_int(lv | rv);
+        case '^':  return cv_int(lv ^ rv);
+        case OP_SHL: return cv_int(lv << rv);
+        case OP_SHR: return cv_int(lv >> rv);
+        case OP_EQ:  return cv_int(lv == rv);
+        case OP_NE:  return cv_int(lv != rv);
+        case '<':  return cv_int(lv < rv);
+        case '>':  return cv_int(lv > rv);
+        case OP_LE: return cv_int(lv <= rv);
+        case OP_GE: return cv_int(lv >= rv);
+        case OP_LOGAND: return cv_int(lv && rv);
+        case OP_LOGOR:  return cv_int(lv || rv);
         default: error("unsupported global initializer");
       }
     }
-    case ND_COND:
-      return const_fold(n->cond) ? const_fold(n->then) :
-                                  const_fold(n->els);
+    case ND_COND: {
+      CVal c = const_fold(n->cond);
+      return const_fold(c.is_float ? (c.fval != 0 ? n->then : n->els) :
+                                    (c.val ? n->then : n->els));
+    }
     default:
       error("unsupported global initializer");
   }
@@ -1474,14 +1538,29 @@ static void gen_data(Node *n) {
     fprintf(out, "  .quad %s\n", n->init->var->name);
     return;
   }
+  CVal v = const_fold(n->init);
   section(".data");
   fprintf(out, "  .globl %s\n", n->name);
   fprintf(out, "%s:\n", n->name);
+  if (n->type->kind == TY_DOUBLE) {
+    double d = v.is_float ? v.fval : (double)v.val;
+    unsigned long long bits;
+    memcpy(&bits, &d, 8);
+    fprintf(out, "  .quad 0x%llx\n", bits);
+    return;
+  }
+  if (n->type->kind == TY_FLOAT) {
+    float f = v.is_float ? (float)v.fval : (float)v.val;
+    unsigned bits;
+    memcpy(&bits, &f, 4);
+    fprintf(out, "  .long 0x%x\n", bits);
+    return;
+  }
   fprintf(out, "  .%s %d\n",
           n->type->size == 1 ? "byte" :
           n->type->size == 2 ? "short" :
           n->type->size == 4 ? "long" : "quad",
-          const_fold(n->init));
+          v.is_float ? (int)v.fval : v.val);
 }
 
 static void gen_func(Node *n) {
