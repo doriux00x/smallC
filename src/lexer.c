@@ -22,6 +22,7 @@ static Keyword keywords[] = {
   {"if", TK_IF}, {"else", TK_ELSE}, {"while", TK_WHILE},
   {"for", TK_FOR}, {"return", TK_RETURN}, {"sizeof", TK_SIZEOF},
   {"break", TK_BREAK}, {"continue", TK_CONTINUE}, {"do", TK_DO},
+  {"switch", TK_SWITCH}, {"case", TK_CASE}, {"default", TK_DEFAULT},
 };
 
 /* longest first so ">>=" wins over ">>" which wins over ">" */
@@ -242,6 +243,7 @@ static char *kind_names[] = {
   "TYPEDEF", "EXTERN", "STATIC",
   "IF", "ELSE", "WHILE", "FOR", "RETURN",
   "SIZEOF", "BREAK", "CONTINUE", "DO",
+  "SWITCH", "CASE", "DEFAULT",
   "PUNCT",
 };
 

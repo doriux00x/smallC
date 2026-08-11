@@ -50,6 +50,8 @@ typedef enum {
   ND_WHILE,          /* cond / then */
   ND_DO_WHILE,       /* then / cond */
   ND_FOR,            /* init / cond / inc / then */
+  ND_SWITCH,         /* cond / body; labels stay in the body tree */
+  ND_CASE,           /* case label: lhs is the value, NULL for default */
   ND_RETURN,         /* lhs or NULL */
   ND_BREAK,
   ND_CONTINUE,
@@ -100,6 +102,7 @@ struct Node {
   Node *elems;                 /* ND_INIT_LIST, linked by next */
   Node *inc;                   /* ND_FOR */
   Node *next;
+  int label;                   /* ND_CASE: jump label, filled by codegen */
   char *name;                  /* identifier */
   char *str;                   /* ND_STR decoded contents */
   int str_len;

@@ -232,6 +232,20 @@ static void dump_stmt(Node *n, int d) {
         dump_expr(n->inc, d + 1);
       dump_stmt(n->then, d + 1);
       return;
+    case ND_SWITCH:
+      printf("switch\n");
+      dump_expr(n->cond, d + 1);
+      dump_stmt(n->body, d + 1);
+      return;
+    case ND_CASE:
+      if (n->lhs) {
+        printf("case:\n");
+        dump_expr(n->lhs, d + 1);
+      } else {
+        printf("default\n");
+      }
+      dump_stmt(n->body, d + 1);
+      return;
     case ND_RETURN:
       printf("return\n");
       if (n->lhs)

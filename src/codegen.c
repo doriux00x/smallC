@@ -54,6 +54,16 @@ static int brk_labels[64], cont_labels[64];
 static int brk_n, cont_n;
 static int ret_label;
 
+/* constant expression support, used by resolve_stmt (case labels)
+ * and gen_data (global initializers) */
+typedef struct CVal CVal;
+struct CVal {
+  int is_float;   /* the value lives in fval */
+  int val;
+  double fval;
+};
+static CVal const_fold(Node *n);
+
 /* ------------------------------------------------------------------ */
 /* symbol tables and type inference (resolve)                          */
 /* ------------------------------------------------------------------ */
@@ -640,6 +650,99 @@ static void resolve_initializer(Node *n) {
   }
 }
 
+/* every node kind const_fold() can evaluate, i.e. an integer
+ * constant expression with no variables or side effects */
+static int is_const_expr(Node *n) {
+  switch (n->kind) {
+    case ND_NUM:
+    case ND_SIZEOF:
+      return 1;
+    case ND_CAST:
+      return is_const_expr(n->lhs);
+    case ND_UNARY:
+    case ND_COND:
+      return is_const_expr(n->lhs) &&
+             (!n->rhs || is_const_expr(n->rhs)) &&
+             (!n->cond || is_const_expr(n->cond)) &&
+             (!n->els || is_const_expr(n->els));
+    case ND_BIN:
+      return is_const_expr(n->lhs) && is_const_expr(n->rhs);
+    default:
+      return 0;
+  }
+}
+
+/* walk the statement tree of a switch body, calling fn on every
+ * case/default label in source order. the tree is not modified: the
+ * labels keep their place in the body and gen_stmt emits them where
+ * they sit (C11 6.8.4.2p5 lets them hide in blocks and branches).
+ * a label's body hangs off the label node (it is never part of the
+ * enclosing chain), so both positions are visited exactly once.
+ * nested switches own their own labels. */
+static void walk_cases(Node *s, void (*fn)(Node *, void *), void *arg) {
+  for (; s; s = s->next) {
+    if (s->kind == ND_CASE) {
+      fn(s, arg);
+      /* the body hangs off the label (next is NULL unless it is a
+       * declaration chain), never in this chain, so walk it here */
+      if (s->body)
+        walk_cases(s->body, fn, arg);
+      continue;
+    }
+    switch (s->kind) {
+      case ND_BLOCK:
+        walk_cases(s->body, fn, arg);
+        break;
+      case ND_IF:
+        walk_cases(s->then, fn, arg);
+        if (s->els)
+          walk_cases(s->els, fn, arg);
+        break;
+      case ND_WHILE:
+      case ND_DO_WHILE:
+      case ND_FOR:
+        walk_cases(s->then, fn, arg);
+        break;
+      case ND_SWITCH:
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/* case-label validation state for one switch: the values seen so far
+ * (for duplicate detection) and whether a default has been seen */
+typedef struct {
+  int *seen;
+  int n, cap;
+  int seen_def;
+} CaseCheck;
+
+static void check_case(Node *c, void *arg) {
+  CaseCheck *cs = arg;
+  if (!c->lhs) {
+    if (cs->seen_def)
+      error("duplicate default label");
+    cs->seen_def = 1;
+    return;
+  }
+  resolve_expr(c->lhs);
+  if (!is_const_expr(c->lhs))
+    error("case label is not a constant");
+  CVal v = const_fold(c->lhs);
+  if (v.is_float)
+    error("case label is not an integer constant");
+  if (cs->n == cs->cap) {
+    cs->cap = cs->cap ? cs->cap * 2 : 8;
+    cs->seen = xrealloc(cs->seen, sizeof(int) * cs->cap);
+  }
+  for (int i = 0; i < cs->n; i++)
+    if (cs->seen[i] == v.val)
+      error("duplicate case value");
+  cs->seen[cs->n++] = v.val;
+}
+
 static void resolve_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -703,6 +806,16 @@ static void resolve_stmt(Node *n) {
         resolve_expr(n->inc);
       resolve_stmt(n->then);
       leave_scope();
+      return;
+    case ND_SWITCH: {
+      CaseCheck st = {0};
+      resolve_expr(n->cond);
+      walk_cases(n->body, check_case, &st);
+      resolve_stmt(n->body);
+      return;
+    }
+    case ND_CASE:
+      resolve_stmt(n->body);
       return;
     case ND_RETURN:
       if (n->lhs) {
@@ -1559,6 +1672,20 @@ static void gen_expr(Node *n) {
   }
 }
 
+/* assign a label to a case and emit its compare against the switch
+ * value sitting in %rax; *arg is the default's label, or -1 */
+static void gen_case_label(Node *c, void *arg) {
+  int *def = arg;
+  c->label = labeln++;
+  if (!c->lhs) {
+    *def = c->label;
+    return;
+  }
+  CVal v = const_fold(c->lhs);
+  fprintf(out, "  cmp $%d, %%rax\n", v.val);
+  fprintf(out, "  je .L%d\n", c->label);
+}
+
 static void gen_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -1676,6 +1803,29 @@ static void gen_stmt(Node *n) {
       cont_n--;
       return;
     }
+    case ND_SWITCH: {
+      /* compare the value in %rax against every case, jumping to the
+       * matching body, the default, or the end of the switch */
+      gen_expr(n->cond);
+      int end = labeln++;
+      int def = -1;
+      walk_cases(n->body, gen_case_label, &def);
+      if (def >= 0)
+        fprintf(out, "  jmp .L%d\n", def);
+      else
+        fprintf(out, "  jmp .L%d\n", end);
+
+      brk_labels[brk_n++] = end;
+      gen_stmt(n->body);
+      brk_n--;
+      fprintf(out, ".L%d:\n", end);
+      return;
+    }
+    case ND_CASE:
+      /* the label was assigned when the compare chain was emitted */
+      fprintf(out, ".L%d:\n", n->label);
+      gen_stmt(n->body);
+      return;
     case ND_RETURN:
       if (n->lhs) {
         gen_expr(n->lhs);
@@ -1724,12 +1874,6 @@ static void emit_string(Node *n) {
  * an integer or a double; the declared type of the object applies
  * the final narrowing (a double global keeps the double bits, a float
  * global rounds to float32, an int global truncates) */
-typedef struct {
-  int is_float;   /* the value lives in fval */
-  int val;
-  double fval;
-} CVal;
-
 static CVal cv_int(int v)   { CVal c = {0, v, 0};    return c; }
 static CVal cv_fp(double f) { CVal c = {1, 0, f};    return c; }
 

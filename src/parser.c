@@ -10,6 +10,9 @@ static Token *tok;
 
 /* loops we're nested in, so break/continue can be validated */
 static int nloop;
+/* switches we're nested in; case labels may only appear in the
+ * switch body's own statement list, so depth must be exactly 1 */
+static int nswitch;
 
 static Token *consume(TokenKind k) {
   if (tok->kind != k)
@@ -618,6 +621,39 @@ static Node *parse_stmt(void) {
     return n;
   }
 
+  if (consume(TK_SWITCH)) {
+    expect_punct("(");
+    Node *cond = parse_expr();
+    expect_punct(")");
+
+    Node *n = node_new(ND_SWITCH);
+    n->cond = cond;
+    nswitch++;
+    expect_punct("{");
+    n->body = parse_block();
+    nswitch--;
+    return n;
+  }
+
+  if (consume(TK_CASE)) {
+    if (!nswitch)
+      error_at(tok->loc, "case label outside a switch");
+    Node *n = node_new(ND_CASE);
+    n->lhs = parse_expr();
+    expect_punct(":");
+    n->body = parse_stmt();
+    return n;
+  }
+
+  if (consume(TK_DEFAULT)) {
+    if (!nswitch)
+      error_at(tok->loc, "case label outside a switch");
+    expect_punct(":");
+    Node *n = node_new(ND_CASE);
+    n->body = parse_stmt();
+    return n;
+  }
+
   if (consume(TK_IF)) {
     expect_punct("(");
     Node *cond = parse_expr();
@@ -697,8 +733,8 @@ static Node *parse_stmt(void) {
   }
 
   if (consume(TK_BREAK)) {
-    if (!nloop)
-      error_at(tok->loc, "break outside of loop");
+    if (!nloop && !nswitch)
+      error_at(tok->loc, "break outside of loop or switch");
     expect_punct(";");
     return node_new(ND_BREAK);
   }
@@ -721,8 +757,9 @@ static Node *parse_stmt(void) {
 
   /* expression statement; a bare ';' also lands here */
   Node *e = node_new(ND_EXPR_STMT);
-  if (!consume_punct(";"))
-    e->lhs = parse_expr();
+  if (consume_punct(";"))
+    return e;
+  e->lhs = parse_expr();
   expect_punct(";");
   return e;
 }
