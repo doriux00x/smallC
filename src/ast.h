@@ -6,26 +6,39 @@ typedef struct Obj Obj;
 
 typedef enum {
   TY_VOID, TY_CHAR, TY_SHORT, TY_INT, TY_LONG,
-  TY_FLOAT, TY_DOUBLE, TY_PTR, TY_ARRAY, TY_FUNC,
+  TY_FLOAT, TY_DOUBLE, TY_PTR, TY_ARRAY, TY_FUNC, TY_STRUCT,
 } TypeKind;
 
 typedef struct Type Type;
+typedef struct Member Member;
+
+struct Member {
+  Member *next;
+  char *name;
+  Type *type;
+  int offset;          /* filled in by layout_struct() */
+};
 
 struct Type {
   TypeKind kind;
   int is_unsigned;   /* signed/unsigned modifier */
   int is_longlong;   /* "long long" */
   int size;          /* bytes per target ABI */
+  int align;         /* alignment, same ABI */
   int array_len;     /* TY_ARRAY only */
   Type *base;        /* pointee / element type */
   Type *ret;         /* TY_FUNC return type */
   Node *params;      /* TY_FUNC params, ND_DECL nodes linked by next */
+  Member *members;   /* TY_STRUCT */
+  Type *mark_prev;   /* cycle guard for the -a dump & struct member walks */
 };
 
 Type *type_new(TypeKind k);
 Type *ptr_to(Type *base);
 Type *array_of(Type *base, int len);
 Type *func_type(Type *ret);
+Type *struct_type(void);
+void layout_struct(Type *t);
 int type_size(Type *t);
 
 typedef enum {

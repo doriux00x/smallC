@@ -65,11 +65,67 @@ static void expect_punct(char *op) {
 
 /* -------- types -------- */
 
+/* struct tags live in their own namespace, like C says */
+typedef struct Tag Tag;
+struct Tag {
+  Tag *next;
+  char *name;
+  Type *type;
+};
+
+static Tag *tags;
+
+static Type *parse_typespec(void);
+static Type *declarator(Type *base, char **name);
+
+static Type *find_tag(char *name) {
+  for (Tag *t = tags; t; t = t->next)
+    if (strcmp(t->name, name) == 0)
+      return t->type;
+  return NULL;
+}
+
+static void register_tag(char *name, Type *type) {
+  Tag *t = xmalloc(sizeof(Tag));
+  t->name = name;
+  t->type = type;
+  t->next = tags;
+  tags = t;
+}
+
+static Member *parse_struct_members(void) {
+  Member head = {0};
+  Member **link = &head.next;
+
+  while (!is_punct("}")) {
+    if (tok->kind == TK_EOF)
+      error_at(tok->loc, "unexpected EOF inside struct definition");
+    Type *base = parse_typespec();
+    for (;;) {
+      char *name;
+      Type *mt = declarator(base, &name);
+      if (!name)
+        error_at(tok->loc, "struct members must be named");
+      Member *m = xmalloc(sizeof(Member));
+      m->next = NULL;
+      m->name = name;
+      m->type = mt;
+      *link = m;
+      link = &m->next;
+      if (!consume_punct(","))
+        break;
+    }
+    expect_punct(";");
+  }
+  consume_punct("}");
+  return head.next;
+}
+
 static int is_typespec_start(Token *t) {
   return t->kind == TK_VOID || t->kind == TK_CHAR || t->kind == TK_SHORT ||
          t->kind == TK_INT || t->kind == TK_LONG || t->kind == TK_SIGNED ||
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
-         t->kind == TK_DOUBLE;
+         t->kind == TK_DOUBLE || t->kind == TK_STRUCT;
 }
 
 /* any run of type keywords: "unsigned long long" etc. */
@@ -88,6 +144,30 @@ static Type *parse_typespec(void) {
     if (consume(TK_INT))       { t = type_new(TY_INT);    continue; }
     if (consume(TK_FLOAT))     { t = type_new(TY_FLOAT);  continue; }
     if (consume(TK_DOUBLE))    { t = type_new(TY_DOUBLE); continue; }
+    if (consume(TK_STRUCT)) {
+      char *tag = NULL;
+      if (at(TK_IDENT))
+        tag = expect(TK_IDENT, "struct tag")->name;
+      if (consume_punct("{")) {
+        /* the tag goes in before the members, so the body can
+         * reference itself (struct Node *next) */
+        Type *st = struct_type();
+        if (tag)
+          register_tag(tag, st);
+        st->members = parse_struct_members();
+        if (!st->members)
+          error_at(tok->loc, "empty struct");
+        layout_struct(st);
+        t = st;
+        continue;
+      }
+      if (!tag)
+        error_at(tok->loc, "expected struct tag");
+      t = find_tag(tag);
+      if (!t)
+        error_at(tok->loc, "unknown struct '%s'", tag);
+      continue;
+    }
     break;
   }
 
@@ -749,9 +829,6 @@ static Node *parse_declarator(Type *base, Type **out) {
     return n;
   }
 
-  if (!name)
-    error_at(tok->loc, "expected identifier");
-
   Node *n = node_new(ND_DECL);
   n->name = name;
   n->type = t;
@@ -772,6 +849,12 @@ static Node *parse_declaration(void) {
   for (;;) {
     Type *t;
     Node *n = parse_declarator(base, &t);
+    if (!n->name && n->kind == ND_DECL) {
+      /* a type-only declaration ("struct point {...};") carries
+       * no storage, just a tag definition */
+      expect_punct(";");
+      return NULL;
+    }
     *link = n;
     link = &n->next;
 

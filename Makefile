@@ -20,8 +20,9 @@ test: $(BIN)
 	./$(BIN) -a tests/expr.c
 	./$(BIN) -a tests/func.c
 	./$(BIN) -a tests/funcptr.c
+	./$(BIN) -a tests/struct.c
 	./$(BIN) -t tests/lexer.c
-	@set -e; for t in run1 run2 run3 run4 run5 runfptr; do \
+	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct; do \
 	  echo "== $$t =="; \
 	  ./$(BIN) tests/$$t.c; \
 	  $(CC) $(CFLAGS) -o $(OBJDIR)/$$t $(OBJDIR)/$$t.s; \

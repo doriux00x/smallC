@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 
 static void dump_type(Type *t) {
+  static Type *dumping;   /* chain of types being printed, to break
+                           * self-referential structs */
   const char *pre = t->is_unsigned ? "unsigned " : "";
   switch (t->kind) {
     case TY_VOID:   printf("void"); return;
@@ -38,6 +40,25 @@ static void dump_type(Type *t) {
       printf(") -> ");
       dump_type(t->ret);
       return;
+    case TY_STRUCT: {
+      for (Type *t2 = dumping; t2; t2 = t2->mark_prev)
+        if (t2 == t) {
+          printf("struct(...)");
+          return;
+        }
+      printf("struct(align %d, size %d){", t->align, t->size);
+      t->mark_prev = dumping;
+      dumping = t;
+      for (Member *m = t->members; m; m = m->next) {
+        printf("%s@%d: ", m->name, m->offset);
+        dump_type(m->type);
+        if (m->next)
+          printf(", ");
+      }
+      dumping = t->mark_prev;
+      printf("}");
+      return;
+    }
   }
 }
 

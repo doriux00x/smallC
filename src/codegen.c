@@ -97,6 +97,8 @@ static int roundup(int n, int m) {
 static void check_type_supported(Type *t) {
   /* FIXME: floats need movss/movsd and cvtsi2sd before this gate
    * can come down */
+  static Type *marked;   /* chain of structs being walked, so
+                          * self-referential ones terminate */
   for (;;) {
     switch (t->kind) {
       case TY_FLOAT:
@@ -107,10 +109,27 @@ static void check_type_supported(Type *t) {
       case TY_ARRAY:
         t = t->base;
         continue;
+      case TY_STRUCT:
+        for (Type *t2 = marked; t2; t2 = t2->mark_prev)
+          if (t2 == t)
+            return;
+        t->mark_prev = marked;
+        marked = t;
+        for (Member *m = t->members; m; m = m->next)
+          check_type_supported(m->type);
+        marked = t->mark_prev;
+        return;
       default:
         return;
     }
   }
+}
+
+static Member *find_member(Type *st, char *name) {
+  for (Member *m = st->members; m; m = m->next)
+    if (strcmp(m->name, name) == 0)
+      return m;
+  return NULL;
 }
 
 static Type *result_type(Type *a, Type *b) {
@@ -234,11 +253,34 @@ static void resolve_expr(Node *n) {
       n->type = o->type;
       return;
     }
+    case ND_MEMBER: {
+      resolve_expr(n->lhs);
+      Type *st;
+      if (n->is_pntr) {
+        if (n->lhs->type->kind != TY_PTR ||
+            n->lhs->type->base->kind != TY_STRUCT)
+          error("'->' on a non-struct pointer");
+        st = n->lhs->type->base;
+      } else {
+        if (n->lhs->type->kind != TY_STRUCT)
+          error("'.' on a non-struct");
+        st = n->lhs->type;
+      }
+      Member *m = find_member(st, n->name);
+      if (!m)
+        error("no member named '%s'", n->name);
+      check_type_supported(m->type);
+      n->type = m->type;
+      return;
+    }
     case ND_ASSIGN: {
       resolve_expr(n->lhs);
-      if (n->lhs->kind == ND_MEMBER)
-        error("struct access not implemented");
       resolve_expr(n->rhs);
+      if (n->lhs->type->kind == TY_STRUCT)
+        error("struct assignment not implemented");
+      if (n->lhs->type->kind == TY_ARRAY ||
+          n->lhs->type->kind == TY_FUNC)
+        error("can't assign to an array or function");
       if (n->op != '=' && n->lhs->type->kind == TY_PTR &&
           n->op != OP_ADD_ASSIGN && n->op != OP_SUB_ASSIGN)
         error("invalid compound assignment on a pointer");
@@ -293,9 +335,6 @@ static void resolve_expr(Node *n) {
       else
         error("subscripted value is not an array or pointer");
       return;
-    case ND_MEMBER:
-      error("struct access not implemented");
-      return;
     case ND_SIZEOF:
       if (n->lhs)
         resolve_expr(n->lhs);
@@ -332,8 +371,11 @@ static void resolve_stmt(Node *n) {
       o->offset = cur_offset;
       push_var(o);
       n->var = o;
-      if (n->init)
+      if (n->init) {
         resolve_expr(n->init);
+        if (n->type->kind == TY_STRUCT)
+          error("struct initializers not implemented");
+      }
       return;
     }
     case ND_EXPR_STMT:
@@ -419,8 +461,13 @@ void resolve(Node *prog) {
 
     Type *ft = n->type;
     check_type_supported(ft->ret);
-    for (Node *p = ft->params; p; p = p->next)
+    for (Node *p = ft->params; p; p = p->next) {
       check_type_supported(p->type);
+      if (p->type->kind == TY_STRUCT)
+        error("passing structs by value not implemented");
+    }
+    if (ft->ret->kind == TY_STRUCT)
+      error("returning structs by value not implemented");
 
     if (!n->body)
       continue;   /* prototype only */
@@ -524,6 +571,15 @@ static void gen_addr(Node *n) {
         fprintf(out, "  imul $%d, %%rax, %%rax\n", sz);
       fprintf(out, "  pop %%rdi\n");
       fprintf(out, "  add %%rdi, %%rax\n");
+      return;
+    }
+    case ND_MEMBER: {
+      /* any struct-typed lvalue (var, member, deref, index) already
+       * evaluated to an address, since load() skips TY_STRUCT */
+      gen_expr(n->lhs);
+      Type *st = n->is_pntr ? n->lhs->type->base : n->lhs->type;
+      Member *m = find_member(st, n->name);
+      fprintf(out, "  add $%d, %%rax\n", m->offset);
       return;
     }
     case ND_UNARY:
@@ -679,7 +735,8 @@ static void gen_expr(Node *n) {
       return;
     case ND_VAR:
       gen_addr(n);
-      if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC)
+      if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
+          n->type->kind != TY_STRUCT)
         load(n->type);
       return;
     case ND_ASSIGN: {
@@ -731,7 +788,7 @@ static void gen_expr(Node *n) {
           /* the operand is a pointer; its value is the address
            * (and *fp on a function pointer is the function) */
           gen_expr(n->lhs);
-          if (n->type->kind != TY_FUNC)
+          if (n->type->kind != TY_FUNC && n->type->kind != TY_STRUCT)
             load(n->type);
           return;
         case '+':
@@ -798,7 +855,14 @@ static void gen_expr(Node *n) {
       return;
     case ND_INDEX:
       gen_addr(n);
-      if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC)
+      if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
+          n->type->kind != TY_STRUCT)
+        load(n->type);
+      return;
+    case ND_MEMBER:
+      gen_addr(n);
+      if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
+          n->type->kind != TY_STRUCT)
         load(n->type);
       return;
     case ND_SIZEOF:
