@@ -767,6 +767,7 @@ static Type *parse_params(Type *ret) {
 
 /* array and parameter suffixes; "f[3](int)" is array of func */
 static Type *suffix_loop(Type *t) {
+  int dims[64], dim_n = 0;
   for (;;) {
     if (consume_punct("[")) {
       int len = 0;
@@ -775,13 +776,24 @@ static Type *suffix_loop(Type *t) {
         tok = tok->next;
       }
       expect_punct("]");
-      t = array_of(t, len);
+      if (dim_n < 64)
+        dims[dim_n++] = len;
       continue;
     }
-    if (is_punct("("))
+    if (is_punct("(")) {
+      /* a function suffix binds to whatever the dims have built so
+       * far, so flush them first */
+      for (int i = dim_n - 1; i >= 0; i--)
+        t = array_of(t, dims[i]);
+      dim_n = 0;
       t = parse_params(t);
-    else
-      return t;
+      continue;
+    }
+    /* brackets read left to right are outermost first, so the type
+     * nests them in reverse: x[2][4] is array[2] of array[4] of base */
+    for (int i = dim_n - 1; i >= 0; i--)
+      t = array_of(t, dims[i]);
+    return t;
   }
 }
 
@@ -831,6 +843,32 @@ static Type *declarator(Type *base, char **name) {
 
 /* a named declarator, wrapped into a node; functions may pick up a
  * body here */
+/* a brace initializer: { e1, e2, ... }, nested lists for aggregates.
+ * empty lists ({}) zero-fill the object, and a trailing comma is
+ * legal, both per C's grammar */
+static Node *parse_initializer(void) {
+  if (!is_punct("{"))
+    return parse_assign();
+
+  tok = tok->next;
+  Node *n = node_new(ND_INIT_LIST);
+  Node head = {0};
+  Node **link = &head.next;
+
+  for (;;) {
+    if (consume_punct("}"))
+      break;
+    Node *e = parse_initializer();
+    *link = e;
+    link = &e->next;
+    if (consume_punct("}"))
+      break;
+    expect_punct(",");
+  }
+  n->elems = head.next;
+  return n;
+}
+
 static Node *parse_declarator(Type *base, Type **out) {
   char *name;
   Type *t = declarator(base, &name);
@@ -849,11 +887,8 @@ static Node *parse_declarator(Type *base, Type **out) {
   n->name = name;
   n->type = t;
 
-  if (consume_punct("=")) {
-    if (is_punct("{"))
-      error_at(tok->loc, "aggregate initializers not implemented yet");
-    n->init = parse_assign();
-  }
+  if (consume_punct("="))
+    n->init = parse_initializer();
   return n;
 }
 

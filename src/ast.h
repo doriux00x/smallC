@@ -65,6 +65,7 @@ typedef enum {
   ND_MEMBER,         /* lhs.member or lhs->member, is_pntr */
   ND_SIZEOF,         /* sizeof expr (lhs) or sizeof type (targ) */
   ND_CAST,           /* value conversion, target type in targ */
+  ND_INIT_LIST,      /* { e1, e2, ... } initializer, children in elems */
 } NodeKind;
 
 /* operator codes for ND_BIN/ND_UNARY/ND_ASSIGN.
@@ -80,6 +81,14 @@ enum {
   OP_INC, OP_DEC,
 };
 
+/* one scalar slot of a flattened brace initializer; expr is NULL for
+ * a zero-filled slot */
+typedef struct {
+  Type *ty;
+  int offset;
+  Node *expr;
+} Init;
+
 struct Node {
   NodeKind kind;
   Type *type;        /* ND_DECL only; expr nodes get typed in the sema pass */
@@ -88,6 +97,7 @@ struct Node {
   Node *args;                  /* ND_CALL, linked by next */
   Node *body;                  /* ND_FUNC body / ND_BLOCK children */
   Node *init;                  /* ND_DECL / ND_FOR init */
+  Node *elems;                 /* ND_INIT_LIST, linked by next */
   Node *inc;                   /* ND_FOR */
   Node *next;
   char *name;                  /* identifier */
@@ -104,6 +114,8 @@ struct Node {
                                   ND_CALL: hidden struct return buffer;
                                   ND_RETURN: the function's "~ret" param */
   Type *targ;                  /* ND_SIZEOF / ND_CAST type operand */
+  Init *inits;                 /* ND_DECL: flattened initializer leaves */
+  int init_n;
 };
 
 #endif

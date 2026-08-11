@@ -428,6 +428,8 @@ static void resolve_expr(Node *n) {
         check_type_supported(n->targ);
       n->type = type_new(TY_INT);
       return;
+    case ND_INIT_LIST:
+      error("initializer list not allowed in an expression");
     default:
       error("internal: unexpected node kind %d", n->kind);
   }
@@ -445,6 +447,199 @@ static void resolve_block(Node *n) {
 static Type *cur_ret;   /* return type of the function being walked */
 static Obj *cur_sret;   /* hidden "~ret" param Obj, for struct returns */
 
+/* -------- brace initializers -------- */
+
+/* flattening {1,2,...} into a list of (offset, type, expr) leaves. a
+ * braced element feeds the aggregate's members one list element each;
+ * an unbraced element "auto-braces" into the current sub-aggregate
+ * and keeps consuming elements from the same list, per C's rules */
+
+static Init *init_leafs;
+static int init_leaf_n;
+static int init_counting;   /* flex-array length probe: no appends */
+
+static int is_agg(Type *t) {
+  return t->kind == TY_ARRAY || t->kind == TY_STRUCT;
+}
+
+static void init_add(Type *ty, int off, Node *expr) {
+  if (init_counting)
+    return;
+  init_leafs = xrealloc(init_leafs, sizeof(Init) * (init_leaf_n + 1));
+  init_leafs[init_leaf_n].ty = ty;
+  init_leafs[init_leaf_n].offset = off;
+  init_leafs[init_leaf_n].expr = expr;
+  init_leaf_n++;
+}
+
+/* scalar slots one element of an aggregate consumes; a zero-length
+ * (flexible) nested array makes it 0, which callers reject */
+static int init_scalars(Type *ty) {
+  if (ty->kind == TY_ARRAY)
+    return ty->array_len * init_scalars(ty->base);
+  if (ty->kind == TY_STRUCT) {
+    int c = 0;
+    for (Member *m = ty->members; m; m = m->next)
+      c += init_scalars(m->type);
+    return c;
+  }
+  return 1;
+}
+
+static Node *init_fill(Type *ty, int off, Node *es);
+
+/* a char leaf for string expansion */
+static Node *char_node(char c) {
+  Node *n = xmalloc(sizeof(Node));
+  memset(n, 0, sizeof(Node));
+  n->kind = ND_NUM;
+  n->val = c;
+  return n;
+}
+
+/* fill the members of the aggregate ty at off from the element list
+ * es; the list may end early (the rest of the aggregate zero-fills).
+ * returns the first unconsumed element, or NULL. leftovers are an
+ * error for a braced list but feed the next sibling slot when the
+ * elements auto-brace, so the caller decides */
+static Node *init_fill_members(Type *ty, int off, Node *es) {
+  if (ty->kind == TY_ARRAY) {
+    int sz = type_size(ty->base);
+    if (es && es->kind == ND_STR && ty->base->kind == TY_CHAR) {
+      /* a string literal initializes a char array in one go, NUL and
+       * all; shorter strings leave the rest of the array zero. a
+       * string against any other element type falls through to the
+       * loop and is rejected one level down */
+      if (es->str_len + 1 > ty->array_len)
+        error("string initializer too long");
+      for (int i = 0; i < ty->array_len; i++) {
+        Node *e = NULL;
+        if (i < es->str_len)
+          e = char_node(es->str[i]);
+        else if (i == es->str_len)
+          e = char_node(0);
+        init_add(ty->base, off + i, e);
+      }
+      return es->next;
+    }
+    for (int i = 0; i < ty->array_len; i++) {
+      if (!es) {
+        /* ran out: the rest of this aggregate zero-fills */
+        for (int j = i; j < ty->array_len; j++) {
+          if (is_agg(ty->base))
+            init_fill_members(ty->base, off + j * sz, NULL);
+          else
+            init_add(ty->base, off + j * sz, NULL);
+        }
+        return NULL;
+      }
+      es = init_fill(ty->base, off + i * sz, es);
+    }
+    return es;
+  }
+  for (Member *m = ty->members; m; m = m->next) {
+    if (!es) {
+      for (; m; m = m->next) {
+        if (is_agg(m->type))
+          init_fill_members(m->type, off + m->offset, NULL);
+        else
+          init_add(m->type, off + m->offset, NULL);
+      }
+      return NULL;
+    }
+    es = init_fill(m->type, off + m->offset, es);
+  }
+  return es;
+}
+
+/* fill one element slot of type ty at off from the element es; a
+ * braced element covers exactly one slot (its list feeds the slot's
+ * own members), an unbraced scalar auto-braces into an aggregate slot */
+static Node *init_fill(Type *ty, int off, Node *es) {
+  if (es && es->kind == ND_INIT_LIST) {
+    if (!is_agg(ty)) {
+      /* braced scalar, like int x = {5} */
+      if (!es->elems || es->elems->next)
+        error("excess elements in initializer");
+      init_add(ty, off, es->elems);
+      return es->next;
+    }
+    if (init_fill_members(ty, off, es->elems))
+      error("excess elements in initializer");
+    return es->next;
+  }
+
+  if (is_agg(ty))
+    return init_fill_members(ty, off, es);
+
+  if (!es) {
+    init_add(ty, off, NULL);   /* zero */
+    return NULL;
+  }
+  if (es->kind == ND_STR)
+    error("invalid string initializer");
+  init_add(ty, off, es);
+  return es->next;
+}
+
+/* how many array elements the list es fills for the flexible array
+ * ty; runs in counting mode so no leaves are produced */
+static int init_len(Type *ty, Node *es) {
+  init_counting = 1;
+  int n = 0;
+  Node *e = es;
+  while (e) {
+    n++;
+    e = init_fill(ty->base, 0, e);
+  }
+  init_counting = 0;
+  return n;
+}
+
+/* entry point: deduce a flexible array's length, then flatten the
+ * initializer into n->inits and type the leaves */
+static void resolve_initializer(Node *n) {
+  Type *ty = n->type;
+
+  if (ty->kind == TY_ARRAY && ty->array_len == 0) {
+    if (n->init->kind == ND_STR) {
+      ty->array_len = n->init->str_len + 1;
+    } else {
+      int per = init_scalars(ty->base);
+      if (per == 0)
+        error("unsupported nested flexible array");
+      ty->array_len = init_len(ty, n->init->elems);
+      if (ty->array_len == 0)
+        error("empty flexible array initializer");
+    }
+    ty->size = type_size(ty);
+  }
+
+  init_leaf_n = 0;
+  if (n->init->kind == ND_STR) {
+    if (ty->kind != TY_ARRAY || ty->base->kind != TY_CHAR)
+      error("invalid string initializer");
+    init_fill_members(ty, 0, n->init);
+  } else {
+    init_fill(ty, 0, n->init);
+  }
+
+  n->inits = xmalloc(sizeof(Init) * init_leaf_n);
+  memcpy(n->inits, init_leafs, sizeof(Init) * init_leaf_n);
+  n->init_n = init_leaf_n;
+
+  for (int i = 0; i < n->init_n; i++) {
+    Init *it = &n->inits[i];
+    if (!it->expr)
+      continue;
+    resolve_expr(it->expr);
+    if (is_real(it->ty) && it->ty->kind != it->expr->type->kind)
+      it->expr = cast_of(it->expr, it->ty);
+    else if (!is_real(it->ty) && is_real(it->expr->type))
+      it->expr = cast_of(it->expr, it->ty);
+  }
+}
+
 static void resolve_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -454,19 +649,29 @@ static void resolve_stmt(Node *n) {
       check_type_supported(n->type);
       if (n->type->kind == TY_VOID)
         error("variable '%s' declared void", n->name);
+      if (n->init) {
+        if (n->type->kind == TY_ARRAY &&
+            n->init->kind != ND_INIT_LIST && n->init->kind != ND_STR)
+          error("invalid array initializer");
+        if (n->init->kind == ND_INIT_LIST ||
+            (n->init->kind == ND_STR && n->type->kind == TY_ARRAY)) {
+          /* brace/string initializers run before the slot is laid
+           * out, so a flexible array can decide its own length */
+          resolve_initializer(n);
+        } else {
+          resolve_expr(n->init);
+          if (is_real(n->type) && n->type->kind != n->init->type->kind)
+            n->init = cast_of(n->init, n->type);
+          else if (!is_real(n->type) && is_real(n->init->type))
+            n->init = cast_of(n->init, n->type);
+        }
+      }
       Obj *o = new_obj(n->name, n->type);
       o->is_local = 1;
       cur_offset -= roundup(o->type->size, 8);
       o->offset = cur_offset;
       push_var(o);
       n->var = o;
-      if (n->init) {
-        resolve_expr(n->init);
-        if (is_real(n->type) && n->type->kind != n->init->type->kind)
-          n->init = cast_of(n->init, n->type);
-        else if (!is_real(n->type) && is_real(n->init->type))
-          n->init = cast_of(n->init, n->type);
-      }
       return;
     }
     case ND_EXPR_STMT:
@@ -554,8 +759,16 @@ void resolve(Node *prog) {
       check_type_supported(n->type);
       if (n->type->kind == TY_VOID && n->var)
         error("variable '%s' declared void", n->name);
-      if (n->init)
-        resolve_expr(n->init);
+      if (n->init) {
+        if (n->type->kind == TY_ARRAY &&
+            n->init->kind != ND_INIT_LIST && n->init->kind != ND_STR)
+          error("invalid array initializer");
+        if (n->init->kind == ND_INIT_LIST ||
+            (n->init->kind == ND_STR && n->type->kind == TY_ARRAY))
+          resolve_initializer(n);
+        else
+          resolve_expr(n->init);
+      }
       continue;
     }
 
@@ -1356,8 +1569,31 @@ static void gen_stmt(Node *n) {
       /* C says uninitialized locals are garbage, so only the init
        * produces code */
       if (n->init) {
-        if (n->init->kind == ND_STR && n->type->kind == TY_ARRAY)
-          error("array initializers not implemented");
+        if (n->inits) {
+          /* brace initializer: one store per flattened leaf */
+          for (int i = 0; i < n->init_n; i++) {
+            Init *it = &n->inits[i];
+            if (it->expr) {
+              gen_expr(it->expr);
+              fprintf(out, "  push %%rax\n");
+              fprintf(out, "  lea %d(%%rbp), %%rdi\n",
+                      n->var->offset + it->offset);
+              fprintf(out, "  pop %%rax\n");
+            } else {
+              /* zero leaf */
+              if (it->ty->kind == TY_DOUBLE)
+                emit_const(0.0);
+              else if (it->ty->kind == TY_FLOAT)
+                emit_constf(0.0f);
+              else
+                fprintf(out, "  mov $0, %%rax\n");
+              fprintf(out, "  lea %d(%%rbp), %%rdi\n",
+                      n->var->offset + it->offset);
+            }
+            store(it->ty);
+          }
+          return;
+        }
         gen_expr(n->init);
         if (n->type->kind == TY_STRUCT) {
           /* struct init is a memcpy; the init expression already
@@ -1609,6 +1845,45 @@ static CVal const_fold(Node *n) {
 }
 
 static void gen_data(Node *n) {
+  if (n->inits) {
+    /* brace initializer: one directive per leaf, .zero for the gaps
+     * (struct members can have padding between them) and the tail */
+    section(".data");
+    fprintf(out, "  .globl %s\n", n->name);
+    fprintf(out, "%s:\n", n->name);
+    int off = 0;
+    for (int i = 0; i < n->init_n; i++) {
+      Init *it = &n->inits[i];
+      if (it->offset > off)
+        fprintf(out, "  .zero %d\n", it->offset - off);
+      if (!it->expr) {
+        fprintf(out, "  .zero %d\n", it->ty->size);
+      } else if (it->ty->kind == TY_DOUBLE) {
+        CVal v = const_fold(it->expr);
+        double d = v.is_float ? v.fval : (double)v.val;
+        unsigned long long bits;
+        memcpy(&bits, &d, 8);
+        fprintf(out, "  .quad 0x%llx\n", bits);
+      } else if (it->ty->kind == TY_FLOAT) {
+        CVal v = const_fold(it->expr);
+        float f = v.is_float ? (float)v.fval : (float)v.val;
+        unsigned bits;
+        memcpy(&bits, &f, 4);
+        fprintf(out, "  .long 0x%x\n", bits);
+      } else {
+        CVal v = const_fold(it->expr);
+        fprintf(out, "  .%s %d\n",
+                it->ty->size == 1 ? "byte" :
+                it->ty->size == 2 ? "short" :
+                it->ty->size == 4 ? "long" : "quad",
+                v.is_float ? (int)v.fval : v.val);
+      }
+      off = it->offset + it->ty->size;
+    }
+    if (off < type_size(n->type))
+      fprintf(out, "  .zero %d\n", type_size(n->type) - off);
+    return;
+  }
   if (n->init->kind == ND_STR) {
     /* the label must exist before the .quad references it */
     emit_string(n->init);
