@@ -1,0 +1,615 @@
+./smallcc -a tests/decls.c
+a                 4 bytes : int
+b                 4 bytes : int
+c                 4 bytes : int
+d                 4 bytes : int
+flags             4 bytes : unsigned int
+counter           8 bytes : long
+big_counter       8 bytes : unsigned long long
+name              8 bytes : ptr->char
+first_name        8 bytes : ptr->char
+last_name         8 bytes : ptr->char
+pointers         64 bytes : array[8]of ptr->int
+bytes            256 bytes : array[256]of unsigned char
+data              8 bytes : ptr->void
+small             2 bytes : short
+ratio             4 bytes : float
+precise           8 bytes : double
+message           8 bytes : ptr->char
+17 top-level item(s)
+./smallcc -a tests/expr.c
+a                 4 bytes : int =
+    bin +
+      bin +
+        num 1
+        bin *
+          num 2
+          num 3
+      num 4
+b                 4 bytes : int =
+    bin *
+      bin +
+        num 1
+        num 2
+      num 3
+c                 4 bytes : int =
+    bin -
+      bin +
+        un -
+          num 5
+        un +
+          num 6
+      un -
+        num 7
+d                 4 bytes : int =
+    bin &
+      un ~
+        num 0
+      num 255
+e                 4 bytes : int =
+    bin <<
+      num 1
+      num 4
+f                 4 bytes : int =
+    bin >>
+      num 64
+      bin +
+        num 2
+        num 1
+g                 4 bytes : int =
+    un !
+      num 0
+h                 4 bytes : int =
+    bin ||
+      bin ==
+        num 1
+        num 1
+      bin &&
+        bin !=
+          num 0
+          num 1
+        num 5
+i                 4 bytes : int =
+    bin |
+      bin &
+        num 5
+        num 3
+      bin ^
+        num 4
+        num 2
+j                 4 bytes : int =
+    cond
+      bin <
+        bin +
+          num 2
+          bin *
+            num 3
+            num 4
+        num 20
+      num 10
+      num 20
+k                 4 bytes : int =
+    cond
+      bin <
+        bin *
+          bin +
+            num 2
+            num 3
+          num 4
+        num 20
+      num 10
+      num 20
+l                 4 bytes : int =
+    assign +=
+      var a
+      num 2
+m                 4 bytes : int =
+    assign *=
+      var b
+      bin +
+        num 3
+        num 4
+n                 4 bytes : int =
+    sizeof type = 4 bytes
+o                 4 bytes : int =
+    sizeof type = 8 bytes
+p                 4 bytes : int =
+    sizeof type = 8 bytes
+q                 4 bytes : int =
+    sizeof
+      var a
+r                 4 bytes : int =
+    bin <<
+      num 1
+      bin +
+        num 2
+        num 1
+s                 4 bytes : int =
+    assign =
+      var x
+      assign =
+        var y
+        num 5
+t                 4 bytes : int =
+    un ++
+      var a
+u                 4 bytes : int =
+    un --
+      var a
+c1                1 bytes : char =
+    num 120
+nl                1 bytes : char =
+    num 10
+msg               8 bytes : ptr->char =
+    str len=5 "hello"
+call              4 bytes : int =
+    call
+      var fact
+      num 1
+      num 2
+      num 3
+idx               4 bytes : int =
+    index
+      var arr
+      num 2
+mem               4 bytes : int =
+    member .field
+      var obj
+mptr              4 bytes : int =
+    member ->field
+      var p
+multi             4 bytes : int =
+    num 1
+second            4 bytes : int =
+    num 2
+third             4 bytes : int =
+    num 3
+bits              4 bytes : unsigned int =
+    bin &
+      un ~
+        num 0
+      num 65535
+32 top-level item(s)
+./smallcc -a tests/func.c
+func add : func(int a, int b) -> int
+  block
+    return
+      bin +
+        var a
+        var b
+func fib : func(int n) -> int
+  block
+    if
+      bin <
+        var n
+        num 2
+      return
+        var n
+    return
+      bin +
+        call
+          var fib
+          bin -
+            var n
+            num 1
+        call
+          var fib
+          bin -
+            var n
+            num 2
+func abs : func(int x) -> int
+  block
+    if
+      bin <
+        var x
+        num 0
+      return
+        un -
+          var x
+      return
+        var x
+func both : func(int a, int b) -> int
+  block
+    if
+      var a
+      if
+        var b
+        return
+          num 10
+        return
+          num 20
+    return
+      num 30
+func countdown : func(int n) -> int
+  block
+    while
+      bin >
+        var n
+        num 0
+      block
+        expr stmt
+          assign =
+            var n
+            bin -
+              var n
+              num 1
+    return
+      var n
+func sum_up_to : func(int n) -> int
+  block
+    decl sum             4 bytes : int
+      num 0
+    decl i               4 bytes : int
+    for
+      expr stmt
+        assign =
+          var i
+          num 1
+      bin <=
+        var i
+        var n
+      assign =
+        var i
+        bin +
+          var i
+          num 1
+      expr stmt
+        assign =
+          var sum
+          bin +
+            var sum
+            var i
+    return
+      var sum
+func sum_range : func(int a, int b) -> int
+  block
+    decl s               4 bytes : int
+      num 0
+    for
+      decl i               4 bytes : int
+        var a
+      bin <=
+        var i
+        var b
+      un ++
+        var i
+      expr stmt
+        assign +=
+          var s
+          var i
+    return
+      var s
+func first_even : func(int limit) -> int
+  block
+    decl i               4 bytes : int
+      num 0
+    do-while
+      block
+        expr stmt
+          assign =
+            var i
+            bin +
+              var i
+              num 1
+      bin &&
+        bin !=
+          bin %
+            var i
+            num 2
+          num 0
+        bin <
+          var i
+          var limit
+    return
+      var i
+func scan : func(int needle, int n) -> int
+  block
+    decl i               4 bytes : int
+      num 0
+    decl seen            4 bytes : int
+      num 0
+    while
+      bin <
+        var i
+        var n
+      block
+        if
+          bin ==
+            var needle
+            var i
+          block
+            expr stmt
+              assign =
+                var seen
+                num 1
+            break
+        expr stmt
+          un ++
+            var i
+    return
+      var seen
+func skip_three : func(int n) -> int
+  block
+    decl i               4 bytes : int
+      num 0
+    decl total           4 bytes : int
+      num 0
+    while
+      bin <
+        var i
+        var n
+      block
+        expr stmt
+          assign =
+            var i
+            bin +
+              var i
+              num 1
+        if
+          bin ==
+            var i
+            num 3
+          continue
+        expr stmt
+          assign =
+            var total
+            bin +
+              var total
+              var i
+    return
+      var total
+func forever : func() -> int
+  (prototype)
+func putchar : func(char c) -> void
+  (prototype)
+func smallest : func(int a, ptr->int b) -> int
+  (prototype)
+func one : func() -> int
+  block
+    return
+      num 1
+func empty : func() -> int
+  block
+func grow : func(ptr->int buf, ptr->char name) -> ptr->void
+  (prototype)
+func greet : func() -> ptr->char
+  block
+    return
+      str len=2 "hi"
+17 top-level item(s)
+./smallcc -a tests/funcptr.c
+fp1               8 bytes : ptr->func(int) -> int
+fp2               8 bytes : ptr->func(int) -> int =
+    num 0
+fp3               8 bytes : ptr->func(ptr->char, int) -> ptr->int
+fparr            32 bytes : array[4]of ptr->func(int) -> int
+fpmem            32 bytes : array[2]of array[2]of ptr->func() -> int
+fp5               8 bytes : ptr->func(ptr->func(int) -> int cb, ptr->char) -> int
+deep              8 bytes : ptr->func(int) -> ptr->func(char) -> ptr->int
+func getcb : func() -> ptr->func(int) -> int
+  (prototype)
+func signal_handler : func(int sig, ptr->func(int) -> void h) -> ptr->func(int) -> void
+  (prototype)
+func apply : func(ptr->func(int) -> int fn, int x) -> int
+  (prototype)
+func takes_abstract : func(ptr->func(int) -> int) -> int
+  (prototype)
+word_ops         48 bytes : array[6]of ptr->func(ptr->char) -> ptr->char
+func use_them : func(int x) -> int
+  block
+    decl local           8 bytes : ptr->func(int) -> int
+    expr stmt
+      assign =
+        var local
+        var fp1
+    return
+      call
+        var local
+        var x
+13 top-level item(s)
+./smallcc -a tests/struct.c
+origin            8 bytes : struct(align 4, size 8){x@0: int, y@4: int}
+func mk : func(int x, int y) -> ptr->struct(align 4, size 8){x@0: int, y@4: int}
+  (prototype)
+func sum : func(ptr->struct(align 8, size 16){val@0: int, next@8: ptr->struct(...)} head) -> int
+  block
+    decl s               4 bytes : int
+      num 0
+    for
+      var head
+      assign =
+        var head
+        member ->next
+          var head
+      expr stmt
+        assign +=
+          var s
+          member ->val
+            var head
+    return
+      var s
+func f : func() -> int
+  block
+    decl anon            8 bytes : struct(align 4, size 8){a@0: int, b@4: int}
+    expr stmt
+      assign =
+        member .a
+          var anon
+        num 1
+    return
+      bin +
+        member .b
+          var anon
+        member .a
+          var anon
+grid             256 bytes : array[4]of array[4]of struct(align 8, size 16){tag@0: char, size@8: long}
+func main : func() -> int
+  block
+    decl a               8 bytes : struct(align 4, size 8){x@0: int, y@4: int}
+    expr stmt
+      assign =
+        member .x
+          var a
+        num 1
+    expr stmt
+      assign =
+        member .y
+          var a
+        num 2
+    decl n1             16 bytes : struct(align 8, size 16){val@0: int, next@8: ptr->struct(...)}
+    decl n2             16 bytes : struct(align 8, size 16){val@0: int, next@8: ptr->struct(...)}
+    expr stmt
+      assign =
+        member .val
+          var n1
+        num 3
+    expr stmt
+      assign =
+        member .next
+          var n1
+        un &
+          var n2
+    expr stmt
+      assign =
+        member .val
+          var n2
+        num 4
+    expr stmt
+      assign =
+        member .next
+          var n2
+        num 0
+    if
+      bin !=
+        call
+          var sum
+          un &
+            var n1
+        num 7
+      return
+        num 1
+    decl w              24 bytes : struct(align 8, size 24){c@0: char, p@4: struct(align 4, size 8){x@0: int, y@4: int}, l@16: long}
+    expr stmt
+      assign =
+        member .c
+          var w
+        num 120
+    expr stmt
+      assign =
+        member .x
+          member .p
+            var w
+        num 5
+    expr stmt
+      assign =
+        member .y
+          member .p
+            var w
+        num 6
+    expr stmt
+      assign =
+        member .l
+          var w
+        num 7
+    expr stmt
+      assign =
+        member .tag
+          index
+            index
+              var grid
+              num 2
+            num 3
+        num 103
+    expr stmt
+      assign =
+        member .size
+          index
+            index
+              var grid
+              num 2
+            num 3
+        num 4
+    if
+      bin !=
+        member .size
+          index
+            index
+              var grid
+              num 2
+            num 3
+        num 4
+      return
+        num 2
+    return
+      num 0
+6 top-level item(s)
+./smallcc -t tests/lexer.c
+CHAR 'char'
+PUNCT '*'
+IDENT 'a'
+PUNCT '='
+STR '"hello /* not a comment */ world"'
+PUNCT ';'
+CHAR 'char'
+PUNCT '*'
+IDENT 'b'
+PUNCT '='
+STR '"tab\t newline\n quote\" backslash\\ nul\0"'
+PUNCT ';'
+INT 'int'
+IDENT 'hex'
+PUNCT '='
+NUM -559038737
+PUNCT ';'
+INT 'int'
+IDENT 'oct'
+PUNCT '='
+NUM 493
+PUNCT ';'
+INT 'int'
+IDENT 'shift'
+PUNCT '='
+NUM 1
+PUNCT '<<'
+NUM 4
+PUNCT ';'
+INT 'int'
+IDENT 'cmp'
+PUNCT '='
+IDENT 'a'
+PUNCT '!='
+IDENT 'b'
+PUNCT ';'
+INT 'int'
+IDENT 'arith'
+PUNCT '='
+IDENT 'a'
+PUNCT '>='
+IDENT 'b'
+PUNCT ';'
+CHAR 'char'
+IDENT 'ch'
+PUNCT '='
+NUM 97
+PUNCT ';'
+CHAR 'char'
+IDENT 'esc'
+PUNCT '='
+NUM 10
+PUNCT ';'
+EOF
+== run1 ==
+run1: 10 13 30 13
+many args: 1 2 3 4 5 6 7 8
+== run2 ==
+run2 ok
+== run3 ==
+run3: fib=55
+== run4 ==
+run4 ok
+== run5 ==
+run5: u/2=2147483647
+== runfptr ==
+fptr ok
+== runstruct ==
+struct ok

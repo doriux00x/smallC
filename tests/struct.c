@@ -27,7 +27,8 @@ int f(void) {
 }
 
 // struct + array mixing: alignment of the element type
-struct cell { char tag; double d; };
+// (keep it integer-only: no float backend yet)
+struct cell { char tag; long size; };
 struct cell grid[4][4];
 
 int main() {
@@ -46,6 +47,7 @@ int main() {
   w.p.y = 6;
   w.l = 7;
   grid[2][3].tag = 'g';
-  // grid[2][3].d = 1.0;  // no float literals until the float backend lands
+  grid[2][3].size = 4;
+  if (grid[2][3].size != 4) return 2;
   return 0;
 }
