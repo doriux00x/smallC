@@ -110,7 +110,10 @@ static void dump_expr(Node *n, int d) {
   indent(d);
   switch (n->kind) {
     case ND_NUM:
-      printf("num %d\n", n->val);
+      if (n->is_float)
+        printf("num %f\n", n->fval);
+      else
+        printf("num %d\n", n->val);
       return;
     case ND_STR:
       printf("str len=%d \"%s\"\n", n->str_len, n->str);
@@ -160,6 +163,12 @@ static void dump_expr(Node *n, int d) {
       } else {
         printf("sizeof type = %d bytes\n", n->targ->size);
       }
+      return;
+    case ND_CAST:
+      printf("cast to ");
+      dump_type(n->targ);
+      printf("\n");
+      dump_expr(n->lhs, d + 1);
       return;
     default:
       printf("<unknown node %d>\n", n->kind);

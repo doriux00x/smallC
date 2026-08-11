@@ -95,15 +95,13 @@ static int roundup(int n, int m) {
 }
 
 static void check_type_supported(Type *t) {
-  /* FIXME: floats need movss/movsd and cvtsi2sd before this gate
-   * can come down */
+  /* doubles use SSE; the 4-byte float type still has no backend */
   static Type *marked;   /* chain of structs being walked, so
                           * self-referential ones terminate */
   for (;;) {
     switch (t->kind) {
       case TY_FLOAT:
-      case TY_DOUBLE:
-        error("floating point not implemented in the backend yet");
+        error("float not implemented, use double");
         return;
       case TY_PTR:
       case TY_ARRAY:
@@ -141,11 +139,23 @@ static Type *result_type(Type *a, Type *b) {
 
 static void resolve_expr(Node *n);
 
-/* the usual scheduler: left operand wins for the result type,
- * unsignedness propagates from either side */
+/* wrap a value conversion; the backend knows int->double
+ * (cvtsi2sd) and double->int (cvttsd2si) only */
+static Node *cast_of(Node *n, Type *to) {
+  if (n->type->kind == TY_DOUBLE && to->kind == TY_DOUBLE)
+    return n;
+  if (n->type->kind != TY_DOUBLE && to->kind != TY_DOUBLE)
+    return n;
+  Node *c = xmalloc(sizeof(Node));
+  c->kind = ND_CAST;
+  c->lhs = n;
+  c->targ = to;
+  c->type = to;
+  return c;
+}
+
 static void resolve_num(Node *n) {
-  Type *t = type_new(TY_INT);
-  n->type = t;
+  n->type = n->is_float ? type_new(TY_DOUBLE) : type_new(TY_INT);
 }
 
 static void resolve_bin(Node *n) {
@@ -154,6 +164,20 @@ static void resolve_bin(Node *n) {
 
   Type *l = n->lhs->type;
   Type *r = n->rhs->type;
+
+  /* usual arithmetic conversions: any double operand drags the
+   * integer side up as a cast; % and the bitwise/shift ops have
+   * no double form at all */
+  int dbl = l->kind == TY_DOUBLE || r->kind == TY_DOUBLE;
+  if (dbl) {
+    if (n->op == '%' || n->op == '&' || n->op == '|' ||
+        n->op == '^' || n->op == OP_SHL || n->op == OP_SHR)
+      error("invalid operands to binary operator");
+    if (l->kind != TY_DOUBLE)
+      n->lhs = cast_of(n->lhs, type_new(TY_DOUBLE));
+    else if (r->kind != TY_DOUBLE)
+      n->rhs = cast_of(n->rhs, type_new(TY_DOUBLE));
+  }
 
   switch (n->op) {
     case '+':
@@ -174,10 +198,14 @@ static void resolve_bin(Node *n) {
         n->type = r;
         return;
       }
-      n->type = result_type(l, r);
+      n->type = dbl ? type_new(TY_DOUBLE) : result_type(l, r);
       return;
     case '*':
     case '/':
+      if (l->kind == TY_PTR || r->kind == TY_PTR)
+        error("invalid operands to binary operator");
+      n->type = dbl ? type_new(TY_DOUBLE) : result_type(l, r);
+      return;
     case '%':
     case '&':
     case '|':
@@ -219,7 +247,12 @@ static void resolve_unary(Node *n) {
     case '!':
       n->type = type_new(TY_INT);
       return;
-    default:   /* + - ~ keep the operand's type */
+    case '~':
+      if (ot->kind == TY_DOUBLE)
+        error("invalid operands to binary operator");
+      n->type = ot;
+      return;
+    default:   /* + - keep the operand's type */
       n->type = ot;
       return;
   }
@@ -229,6 +262,12 @@ static void resolve_cond(Node *n) {
   resolve_expr(n->cond);
   resolve_expr(n->then);
   resolve_expr(n->els);
+  if (n->then->type->kind == TY_DOUBLE &&
+      n->els->type->kind != TY_DOUBLE)
+    n->els = cast_of(n->els, type_new(TY_DOUBLE));
+  else if (n->then->type->kind != TY_DOUBLE &&
+           n->els->type->kind == TY_DOUBLE)
+    n->then = cast_of(n->then, type_new(TY_DOUBLE));
   n->type = n->then->type;
 }
 
@@ -276,15 +315,24 @@ static void resolve_expr(Node *n) {
     case ND_ASSIGN: {
       resolve_expr(n->lhs);
       resolve_expr(n->rhs);
-      if (n->lhs->type->kind == TY_STRUCT)
+      Type *lt = n->lhs->type;
+      if (lt->kind == TY_STRUCT)
         error("struct assignment not implemented");
-      if (n->lhs->type->kind == TY_ARRAY ||
-          n->lhs->type->kind == TY_FUNC)
+      if (lt->kind == TY_ARRAY || lt->kind == TY_FUNC)
         error("can't assign to an array or function");
-      if (n->op != '=' && n->lhs->type->kind == TY_PTR &&
+      if (n->op != '=' && lt->kind != TY_DOUBLE &&
+          n->rhs->type->kind == TY_DOUBLE)
+        error("unsupported compound assignment");
+      if (lt->kind == TY_DOUBLE &&
+          n->rhs->type->kind != TY_DOUBLE)
+        n->rhs = cast_of(n->rhs, type_new(TY_DOUBLE));
+      else if (lt->kind != TY_DOUBLE &&
+               n->rhs->type->kind == TY_DOUBLE)
+        n->rhs = cast_of(n->rhs, lt);
+      if (n->op != '=' && lt->kind == TY_PTR &&
           n->op != OP_ADD_ASSIGN && n->op != OP_SUB_ASSIGN)
         error("invalid compound assignment on a pointer");
-      n->type = n->lhs->type;
+      n->type = lt;
       return;
     }
     case ND_BIN:
@@ -356,6 +404,8 @@ static void resolve_block(Node *n) {
   leave_scope();
 }
 
+static Type *cur_ret;   /* return type of the function being walked */
+
 static void resolve_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -373,6 +423,12 @@ static void resolve_stmt(Node *n) {
       n->var = o;
       if (n->init) {
         resolve_expr(n->init);
+        if (n->type->kind == TY_DOUBLE &&
+            n->init->type->kind != TY_DOUBLE)
+          n->init = cast_of(n->init, type_new(TY_DOUBLE));
+        else if (n->type->kind != TY_DOUBLE &&
+                 n->init->type->kind == TY_DOUBLE)
+          n->init = cast_of(n->init, n->type);
         if (n->type->kind == TY_STRUCT)
           error("struct initializers not implemented");
       }
@@ -409,8 +465,15 @@ static void resolve_stmt(Node *n) {
       leave_scope();
       return;
     case ND_RETURN:
-      if (n->lhs)
+      if (n->lhs) {
         resolve_expr(n->lhs);
+        if (cur_ret->kind == TY_DOUBLE &&
+            n->lhs->type->kind != TY_DOUBLE)
+          n->lhs = cast_of(n->lhs, type_new(TY_DOUBLE));
+        else if (cur_ret->kind != TY_DOUBLE &&
+                 n->lhs->type->kind == TY_DOUBLE)
+          n->lhs = cast_of(n->lhs, cur_ret);
+      }
       return;
     case ND_BREAK:
     case ND_CONTINUE:
@@ -474,6 +537,7 @@ void resolve(Node *prog) {
 
     enter_scope();
     cur_offset = 0;
+    cur_ret = ft->ret;
     for (Node *p = ft->params; p; p = p->next) {
       Obj *po = new_obj(p->name, p->type);
       po->is_local = 1;
@@ -504,9 +568,38 @@ static void section(char *s) {
   fprintf(out, "  .section %s\n", s);
 }
 
-/* load the value at (%rax) into %rax, sign or zero extending to fit
- * the declared type. this is where signedness enters the register */
+/* double constants have no immediate form; each distinct literal gets
+ * a .rodata slot, registered here on first use. forward references
+ * are fine, GAS resolves them within the file */
+static double consts[256];
+static int consts_n;
+
+static void emit_const(double d) {
+  for (int i = 0; i < consts_n; i++)
+    if (consts[i] == d) {
+      fprintf(out, "  movsd .LC%d(%%rip), %%xmm0\n", i);
+      return;
+    }
+  if (consts_n == 256)
+    error("too many floating point constants");
+  consts[consts_n] = d;
+  unsigned long long bits;
+  memcpy(&bits, &d, 8);
+  fprintf(out, "  movsd .LC%d(%%rip), %%xmm0\n", consts_n);
+  section(".rodata");
+  fprintf(out, ".LC%d:\n  .quad 0x%llx\n", consts_n, bits);
+  section(".text");
+  consts_n++;
+}
+
+/* load the value at (%rax) into %rax (ints) or %xmm0 (doubles),
+ * sign or zero extending to fit the declared type. this is where
+ * signedness enters the register */
 static void load(Type *t) {
+  if (t->kind == TY_DOUBLE) {
+    fprintf(out, "  movsd (%%rax), %%xmm0\n");
+    return;
+  }
   switch (t->size) {
     case 1:
       fprintf(out, "  %s (%%rax), %%eax\n",
@@ -528,8 +621,12 @@ static void load(Type *t) {
   }
 }
 
-/* store %rax at (%rdi) */
+/* store %rax (ints) or %xmm0 (doubles) at (%rdi) */
 static void store(Type *t) {
+  if (t->kind == TY_DOUBLE) {
+    fprintf(out, "  movsd %%xmm0, (%%rdi)\n");
+    return;
+  }
   switch (t->size) {
     case 1:
       fprintf(out, "  mov %%al, (%%rdi)\n");
@@ -594,9 +691,55 @@ static void gen_addr(Node *n) {
   }
 }
 
-/* combine %rax (lhs) with %rdi (rhs), result in %rax. pointers get
- * their integer operand scaled on the way in */
+/* combine %rax/%xmm0 (lhs) with %rdi/%xmm1 (rhs), result in
+ * %rax (ints) or %xmm0 (doubles, promotions done in resolve).
+ * pointers get their integer operand scaled on the way in */
 static void emit_combine(int op, Type *lhs_ty, Type *rhs_ty) {
+  if (lhs_ty->kind == TY_DOUBLE || rhs_ty->kind == TY_DOUBLE) {
+    switch (op) {
+      case '+':   fprintf(out, "  addsd %%xmm1, %%xmm0\n"); return;
+      case '-':   fprintf(out, "  subsd %%xmm1, %%xmm0\n"); return;
+      case '*':   fprintf(out, "  mulsd %%xmm1, %%xmm0\n"); return;
+      case '/':   fprintf(out, "  divsd %%xmm1, %%xmm0\n"); return;
+      case OP_LOGAND:
+      case OP_LOGOR: {
+        /* no short-circuiting; normalize both to 0/1 in int regs */
+        fprintf(out, "  movsd %%xmm0, %%xmm3\n");
+        fprintf(out, "  movsd %%xmm1, %%xmm4\n");
+        emit_const(0.0);
+        fprintf(out, "  movsd %%xmm0, %%xmm2\n");
+        fprintf(out, "  ucomisd %%xmm2, %%xmm3\n");
+        fprintf(out, "  setne %%al\n");
+        fprintf(out, "  movzbq %%al, %%rax\n");
+        fprintf(out, "  ucomisd %%xmm2, %%xmm4\n");
+        fprintf(out, "  setne %%dl\n");
+        fprintf(out, "  movzbq %%dl, %%rdx\n");
+        fprintf(out, "  %s %%rdx, %%rax\n",
+                op == OP_LOGAND ? "and" : "or");
+        return;
+      }
+      default: {   /* comparisons */
+        char *set;
+        switch (op) {
+          case '<':   set = "setb";  break;
+          case '>':   set = "seta";  break;
+          case OP_LE: set = "setbe"; break;
+          case OP_GE: set = "setae"; break;
+          case OP_EQ: set = "sete";  break;
+          default:    set = "setne"; break;
+        }
+        /* ucomisd %xmm1, %xmm0 sets flags per (xmm0 vs xmm1):
+         * a<b -> CF, a==b -> ZF. unordered NaN operands look like
+         * "less than" here, same as most compilers without
+         * -ffast-math ever caring */
+        fprintf(out, "  ucomisd %%xmm1, %%xmm0\n");
+        fprintf(out, "  %s %%al\n", set);
+        fprintf(out, "  movzbq %%al, %%rax\n");
+        return;
+      }
+    }
+  }
+
   int size = 0;
   if (lhs_ty->kind == TY_PTR)
     size = type_size(lhs_ty->base);
@@ -687,31 +830,83 @@ static void gen_call(Node *n) {
   int nargs = 0;
   for (Node *a = n->args; a; a = a->next)
     nargs++;
-
-  /* SysV evaluates arguments right-to-left; collect, then push */
   Node **args = xmalloc(sizeof(Node *) * nargs);
   int i = 0;
-  for (Node *a = n->args; a; a = a->next)
+  for (Node *a = n->args; a; a = a->next) {
+    if (a->type->kind == TY_STRUCT)
+      error("passing structs by value not implemented");
     args[i++] = a;
-
-  /* alignment filler goes under the stack args, so it goes down
-   * first: the callee reads its extras starting at 16(%rbp) */
-  int extra = nargs - 6;
-  if (extra > 0 && extra % 2)
-    fprintf(out, "  push $0\n");
-
-  for (i = nargs - 1; i >= 0; i--) {
-    gen_expr(args[i]);
-    fprintf(out, "  push %%rax\n");
   }
 
-  static char *argreg[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-  int nregs = nargs < 6 ? nargs : 6;
-  for (i = 0; i < nregs; i++)
-    fprintf(out, "  pop %s\n", argreg[i]);
+  /* SysV: ints go to rdi..r9, doubles to xmm0..7, each class counted
+   * independently and in argument order; anything past the budget
+   * lands on the stack, still in argument order */
+  static char *intregs[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+  int nsse = 0;
+  {
+    int ireg = 0, sreg = 0;
+    for (i = 0; i < nargs; i++)
+      if (args[i]->type->kind == TY_DOUBLE) {
+        if (sreg < 8) { sreg++; nsse++; }
+      } else if (ireg < 6) {
+        ireg++;
+      }
+  }
+
+  /* odd argument counts would leave rsp 8 bytes off the SysV call
+   * alignment; the filler goes below all the slots, so the callee
+   * never sees it, its only job is the parity */
+  int fill = nargs % 2;
+  if (fill)
+    fprintf(out, "  push $0\n");
+
+  /* evaluate right-to-left, one 8-byte slot per argument */
+  for (i = nargs - 1; i >= 0; i--) {
+    gen_expr(args[i]);
+    if (args[i]->type->kind == TY_DOUBLE) {
+      fprintf(out, "  sub $8, %%rsp\n");
+      fprintf(out, "  movsd %%xmm0, (%%rsp)\n");
+    } else {
+      fprintf(out, "  push %%rax\n");
+    }
+  }
+
+  /* after the pushes, argument i is at i*8(%rsp); draft the register
+   * arguments straight from there, preserving argument order */
+  int ireg = 0, sreg = 0;
+  for (i = 0; i < nargs; i++) {
+    if (args[i]->type->kind == TY_DOUBLE) {
+      if (sreg < 8)
+        fprintf(out, "  movsd %d(%%rsp), %%xmm%d\n", i * 8, sreg++);
+    } else if (ireg < 6) {
+      fprintf(out, "  mov %d(%%rsp), %s\n", i * 8, intregs[ireg++]);
+    }
+  }
+
+  /* compact the stack arguments down to slots 0.. so the callee
+   * finds them contiguous from 16(%rbp) on; the slots they leave
+   * behind are above rsp and never read again */
+  int ireg2 = 0, sreg2 = 0, stk = 0;
+  for (i = 0; i < nargs; i++) {
+    int is_stk;
+    if (args[i]->type->kind == TY_DOUBLE)
+      is_stk = sreg2++ >= 8;
+    else
+      is_stk = ireg2++ >= 6;
+    if (is_stk) {
+      if (args[i]->type->kind == TY_DOUBLE) {
+        fprintf(out, "  movsd %d(%%rsp), %%xmm0\n", i * 8);
+        fprintf(out, "  movsd %%xmm0, %d(%%rsp)\n", stk * 8);
+      } else {
+        fprintf(out, "  mov %d(%%rsp), %%rax\n", i * 8);
+        fprintf(out, "  mov %%rax, %d(%%rsp)\n", stk * 8);
+      }
+      stk++;
+    }
+  }
 
   /* SysV varargs: %al carries the vector-register arg count */
-  fprintf(out, "  mov $0, %%al\n");
+  fprintf(out, "  mov $%d, %%al\n", nsse);
 
   if (n->lhs->kind == ND_VAR && n->lhs->var->is_function) {
     fprintf(out, "  call %s\n", n->lhs->var->name);
@@ -720,14 +915,47 @@ static void gen_call(Node *n) {
     fprintf(out, "  call *%%rax\n");
   }
 
-  if (extra > 0)
-    fprintf(out, "  add $%d, %%rsp\n", extra * 8 + (extra % 2 ? 8 : 0));
+  /* drop the argument slots (and the filler) to restore the frame */
+  fprintf(out, "  add $%d, %%rsp\n", (nargs + fill) * 8);
+}
+
+/* evaluate a condition; jump to lbl when it is false */
+static void gen_cond_jump_false(Node *cond, int lbl) {
+  gen_expr(cond);
+  if (cond->type->kind == TY_DOUBLE) {
+    fprintf(out, "  movsd %%xmm0, %%xmm2\n");
+    emit_const(0.0);
+    fprintf(out, "  movsd %%xmm2, %%xmm1\n");
+    fprintf(out, "  ucomisd %%xmm1, %%xmm0\n");
+    fprintf(out, "  setne %%al\n");
+    fprintf(out, "  movzbq %%al, %%rax\n");
+  }
+  fprintf(out, "  cmp $0, %%rax\n");
+  fprintf(out, "  je .L%d\n", lbl);
+}
+
+/* evaluate a condition; jump to lbl when it is true */
+static void gen_cond_jump_true(Node *cond, int lbl) {
+  gen_expr(cond);
+  if (cond->type->kind == TY_DOUBLE) {
+    fprintf(out, "  movsd %%xmm0, %%xmm2\n");
+    emit_const(0.0);
+    fprintf(out, "  movsd %%xmm2, %%xmm1\n");
+    fprintf(out, "  ucomisd %%xmm1, %%xmm0\n");
+    fprintf(out, "  setne %%al\n");
+    fprintf(out, "  movzbq %%al, %%rax\n");
+  }
+  fprintf(out, "  cmp $0, %%rax\n");
+  fprintf(out, "  jne .L%d\n", lbl);
 }
 
 static void gen_expr(Node *n) {
   switch (n->kind) {
     case ND_NUM:
-      fprintf(out, "  mov $%d, %%rax\n", n->val);
+      if (n->is_float)
+        emit_const(n->fval);
+      else
+        fprintf(out, "  mov $%d, %%rax\n", n->val);
       return;
     case ND_STR:
       emit_string(n);
@@ -746,9 +974,8 @@ static void gen_expr(Node *n) {
       if (n->op == '=') {
         gen_expr(n->rhs);
       } else {
-        /* lhs op= rhs  ==  lhs = lhs op rhs; gen_expr on the lhs
-         * already loads its value, and the compound op maps back
-         * to its plain arithmetic twin */
+        /* lhs op= rhs  ==  lhs = lhs op rhs; the compound op maps
+         * back to its plain arithmetic twin */
         static struct { int from, to; } map[] = {
           {OP_ADD_ASSIGN, '+'}, {OP_SUB_ASSIGN, '-'}, {OP_MUL_ASSIGN, '*'},
           {OP_DIV_ASSIGN, '/'}, {OP_MOD_ASSIGN, '%'},
@@ -759,13 +986,24 @@ static void gen_expr(Node *n) {
         for (int m = 0; m < (int)(sizeof(map) / sizeof(map[0])); m++)
           if (map[m].from == n->op)
             op = map[m].to;
-        gen_expr(n->lhs);
-        fprintf(out, "  push %%rax\n");
-        gen_expr(n->rhs);
-        fprintf(out, "  push %%rax\n");
-        fprintf(out, "  pop %%rdi\n");
-        fprintf(out, "  pop %%rax\n");
-        emit_combine(op, n->lhs->type, n->rhs->type);
+        if (n->type->kind == TY_DOUBLE) {
+          /* double compound: park the rhs, then load the lhs */
+          gen_expr(n->rhs);
+          fprintf(out, "  sub $8, %%rsp\n");
+          fprintf(out, "  movsd %%xmm0, (%%rsp)\n");
+          gen_expr(n->lhs);
+          fprintf(out, "  movsd (%%rsp), %%xmm1\n");
+          fprintf(out, "  add $8, %%rsp\n");
+          emit_combine(op, n->lhs->type, n->rhs->type);
+        } else {
+          gen_expr(n->lhs);
+          fprintf(out, "  push %%rax\n");
+          gen_expr(n->rhs);
+          fprintf(out, "  push %%rax\n");
+          fprintf(out, "  pop %%rdi\n");
+          fprintf(out, "  pop %%rax\n");
+          emit_combine(op, n->lhs->type, n->rhs->type);
+        }
       }
 
       fprintf(out, "  pop %%rdi\n");
@@ -774,10 +1012,30 @@ static void gen_expr(Node *n) {
     }
     case ND_BIN:
       gen_expr(n->rhs);
-      fprintf(out, "  push %%rax\n");
-      gen_expr(n->lhs);
-      fprintf(out, "  pop %%rdi\n");
+      if (n->lhs->type->kind == TY_DOUBLE ||
+          n->rhs->type->kind == TY_DOUBLE) {
+        /* the rhs has to survive the lhs evaluation, which may itself
+         * use the xmm registers, so park it on the stack */
+        fprintf(out, "  sub $8, %%rsp\n");
+        fprintf(out, "  movsd %%xmm0, (%%rsp)\n");
+        gen_expr(n->lhs);
+        fprintf(out, "  movsd (%%rsp), %%xmm1\n");
+        fprintf(out, "  add $8, %%rsp\n");
+      } else {
+        fprintf(out, "  push %%rax\n");
+        gen_expr(n->lhs);
+        fprintf(out, "  pop %%rdi\n");
+      }
       emit_combine(n->op, n->lhs->type, n->rhs->type);
+      return;
+    case ND_CAST:
+      gen_expr(n->lhs);
+      if (n->lhs->type->kind == TY_DOUBLE &&
+          n->targ->kind != TY_DOUBLE)
+        fprintf(out, "  cvttsd2si %%xmm0, %%rax\n");
+      else if (n->lhs->type->kind != TY_DOUBLE &&
+               n->targ->kind == TY_DOUBLE)
+        fprintf(out, "  cvtsi2sd %%rax, %%xmm0\n");
       return;
     case ND_UNARY:
       switch (n->op) {
@@ -796,7 +1054,15 @@ static void gen_expr(Node *n) {
           return;
         case '-':
           gen_expr(n->lhs);
-          fprintf(out, "  neg %%rax\n");
+          if (n->type->kind == TY_DOUBLE) {
+            /* 0.0 - x; the operand has to survive the constant load */
+            fprintf(out, "  movsd %%xmm0, %%xmm2\n");
+            emit_const(0.0);
+            fprintf(out, "  movsd %%xmm2, %%xmm1\n");
+            fprintf(out, "  subsd %%xmm1, %%xmm0\n");
+          } else {
+            fprintf(out, "  neg %%rax\n");
+          }
           return;
         case '~':
           gen_expr(n->lhs);
@@ -804,7 +1070,14 @@ static void gen_expr(Node *n) {
           return;
         case '!':
           gen_expr(n->lhs);
-          fprintf(out, "  cmp $0, %%rax\n");
+          if (n->lhs->type->kind == TY_DOUBLE) {
+            fprintf(out, "  movsd %%xmm0, %%xmm2\n");
+            emit_const(0.0);
+            fprintf(out, "  movsd %%xmm2, %%xmm1\n");
+            fprintf(out, "  ucomisd %%xmm1, %%xmm0\n");
+          } else {
+            fprintf(out, "  cmp $0, %%rax\n");
+          }
           fprintf(out, "  sete %%al\n");
           fprintf(out, "  movzbq %%al, %%rax\n");
           return;
@@ -817,6 +1090,21 @@ static void gen_expr(Node *n) {
           gen_addr(n->lhs);
           fprintf(out, "  push %%rax\n");          /* [addr] */
           load(n->type);
+          if (n->type->kind == TY_DOUBLE) {
+            /* doubles go through xmm0; the old value is kept in
+             * xmm1 for the postfix result, and pointers step a
+             * scaled constant */
+            fprintf(out, "  movsd %%xmm0, %%xmm1\n");
+            emit_const(1.0 * scale);
+            fprintf(out, "  movsd %%xmm1, %%xmm2\n");
+            fprintf(out, "  %ssd %%xmm2, %%xmm0\n",
+                    n->op == OP_INC ? "add" : "sub");
+            fprintf(out, "  pop %%rdi\n");         /* addr */
+            fprintf(out, "  movsd %%xmm0, (%%rdi)\n");
+            if (!n->is_prefix)
+              fprintf(out, "  movsd %%xmm1, %%xmm0\n");
+            return;
+          }
           if (n->is_prefix) {
             fprintf(out, "  %s $%d, %%rax\n",
                     n->op == OP_INC ? "add" : "sub", scale);
@@ -840,9 +1128,7 @@ static void gen_expr(Node *n) {
     case ND_COND: {
       int l1 = labeln++;
       int l2 = labeln++;
-      gen_expr(n->cond);
-      fprintf(out, "  cmp $0, %%rax\n");
-      fprintf(out, "  je .L%d\n", l1);
+      gen_cond_jump_false(n->cond, l1);
       gen_expr(n->then);
       fprintf(out, "  jmp .L%d\n", l2);
       fprintf(out, ".L%d:\n", l1);
@@ -902,9 +1188,7 @@ static void gen_stmt(Node *n) {
     case ND_IF: {
       int l1 = labeln++;
       int l2 = labeln++;
-      gen_expr(n->cond);
-      fprintf(out, "  cmp $0, %%rax\n");
-      fprintf(out, "  je .L%d\n", l1);
+      gen_cond_jump_false(n->cond, l1);
       gen_stmt(n->then);
       fprintf(out, "  jmp .L%d\n", l2);
       fprintf(out, ".L%d:\n", l1);
@@ -919,9 +1203,7 @@ static void gen_stmt(Node *n) {
       brk_labels[brk_n++] = l2;
       cont_labels[cont_n++] = l1;
       fprintf(out, ".L%d:\n", l1);
-      gen_expr(n->cond);
-      fprintf(out, "  cmp $0, %%rax\n");
-      fprintf(out, "  je .L%d\n", l2);
+      gen_cond_jump_false(n->cond, l2);
       gen_stmt(n->then);
       fprintf(out, "  jmp .L%d\n", l1);
       fprintf(out, ".L%d:\n", l2);
@@ -938,9 +1220,7 @@ static void gen_stmt(Node *n) {
       fprintf(out, ".L%d:\n", l1);
       gen_stmt(n->then);
       fprintf(out, ".L%d:\n", l2);
-      gen_expr(n->cond);
-      fprintf(out, "  cmp $0, %%rax\n");
-      fprintf(out, "  jne .L%d\n", l1);
+      gen_cond_jump_true(n->cond, l1);
       fprintf(out, ".L%d:\n", l3);
       brk_n--;
       cont_n--;
@@ -953,11 +1233,8 @@ static void gen_stmt(Node *n) {
       for (Node *s = n->init; s; s = s->next)
         gen_stmt(s);
       fprintf(out, ".L%d:\n", l2);
-      if (n->cond) {
-        gen_expr(n->cond);
-        fprintf(out, "  cmp $0, %%rax\n");
-        fprintf(out, "  je .L%d\n", l3);
-      }
+      if (n->cond)
+        gen_cond_jump_false(n->cond, l3);
       brk_labels[brk_n++] = l3;
       cont_labels[cont_n++] = l1;
       gen_stmt(n->then);
@@ -1010,6 +1287,8 @@ static void emit_string(Node *n) {
 static int const_fold(Node *n) {
   switch (n->kind) {
     case ND_NUM:
+      if (n->is_float)
+        error("floating point global initializers not implemented");
       return n->val;
     case ND_SIZEOF:
       if (n->lhs)
@@ -1094,18 +1373,34 @@ static void gen_func(Node *n) {
   if (frame > 0)
     fprintf(out, "  sub $%d, %%rsp\n", frame);
 
-  /* spill the SysV registers into the param slots; the first six
-   * came in registers, the rest are at 16(%rbp) and up */
+  /* spill the SysV registers into the param slots. ints arrive in
+   * rdi..r9, doubles in xmm0..7, each class counted independently;
+   * whatever overflows its budget sits on the stack in argument
+   * order, at 16(%rbp) and up */
   static char *argreg[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-  int idx = 0;
-  for (Node *p = n->type->params; p; p = p->next, idx++) {
-    if (idx < 6)
-      fprintf(out, "  mov %s, %d(%%rbp)\n", argreg[idx],
-              p->var->offset);
-    else
-      fprintf(out, "  mov %d(%%rbp), %%rax\n"
-                   "  mov %%rax, %d(%%rbp)\n",
-              16 + (idx - 6) * 8, p->var->offset);
+  int idx = 0, sse = 0, stk = 0;
+  for (Node *p = n->type->params; p; p = p->next) {
+    if (p->var->type->kind == TY_DOUBLE) {
+      if (sse < 8)
+        fprintf(out, "  movsd %%xmm%d, %d(%%rbp)\n", sse,
+                p->var->offset);
+      else
+        fprintf(out, "  movsd %d(%%rbp), %%xmm0\n"
+                     "  movsd %%xmm0, %d(%%rbp)\n",
+                16 + stk * 8, p->var->offset);
+      sse++;
+    } else {
+      if (idx < 6)
+        fprintf(out, "  mov %s, %d(%%rbp)\n", argreg[idx],
+                p->var->offset);
+      else
+        fprintf(out, "  mov %d(%%rbp), %%rax\n"
+                     "  mov %%rax, %d(%%rbp)\n",
+                16 + stk * 8, p->var->offset);
+      idx++;
+    }
+    if (idx > 6 || sse > 8)
+      stk++;
   }
 
   brk_n = 0;
