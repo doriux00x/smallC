@@ -64,7 +64,6 @@ typedef enum {
   ND_INDEX,          /* lhs[rhs] */
   ND_MEMBER,         /* lhs.member or lhs->member, is_pntr */
   ND_SIZEOF,         /* sizeof expr (lhs) or sizeof type (targ) */
-  ND_CAST,           /* value conversion, target type in targ */
 } NodeKind;
 
 /* operator codes for ND_BIN/ND_UNARY/ND_ASSIGN.
@@ -93,14 +92,12 @@ struct Node {
   char *name;                  /* identifier */
   char *str;                   /* ND_STR decoded contents */
   int str_len;
-  int val;                     /* ND_NUM, int value */
-  int is_float;                /* ND_NUM: double value in fval */
-  double fval;                 /* ND_NUM, float value */
+  int val;                     /* ND_NUM */
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */
   int is_prefix;               /* ND_UNARY ++/--: prefix vs postfix */
   Obj *var;                    /* resolved symbol, ND_VAR / ND_STR */
-  Type *targ;                  /* ND_SIZEOF / ND_CAST type operand */
+  Type *targ;                  /* ND_SIZEOF type operand */
 };
 
 #endif

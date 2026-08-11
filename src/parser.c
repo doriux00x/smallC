@@ -247,6 +247,12 @@ static Node *new_unary(int op, Node *lhs) {
   return n;
 }
 
+static Node *new_num(int val) {
+  Node *n = node_new(ND_NUM);
+  n->val = val;
+  return n;
+}
+
 /* -------- expressions, lowest precedence first -------- */
 
 static Node *parse_assign(void);
@@ -536,16 +542,8 @@ static Node *parse_primary(void) {
   }
 
   Token *t;
-  if ((t = consume(TK_NUM))) {
-    Node *n = node_new(ND_NUM);
-    if (t->is_float) {
-      n->is_float = 1;
-      n->fval = t->fval;
-    } else {
-      n->val = t->val;
-    }
-    return n;
-  }
+  if ((t = consume(TK_NUM)))
+    return new_num(t->val);
 
   if ((t = consume(TK_STR))) {
     Node *n = node_new(ND_STR);
