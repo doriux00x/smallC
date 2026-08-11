@@ -100,7 +100,9 @@ struct Node {
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */
   int is_prefix;               /* ND_UNARY ++/--: prefix vs postfix */
-  Obj *var;                    /* resolved symbol, ND_VAR / ND_STR */
+  Obj *var;                    /* resolved symbol, ND_VAR / ND_STR;
+                                  ND_CALL: hidden struct return buffer;
+                                  ND_RETURN: the function's "~ret" param */
   Type *targ;                  /* ND_SIZEOF / ND_CAST type operand */
 };
 

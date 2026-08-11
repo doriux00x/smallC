@@ -31,6 +31,18 @@ int f(void) {
 struct cell { char tag; long size; };
 struct cell grid[4][4];
 
+// structs by value: params, returns (via the hidden ~ret buffer) and
+// whole-struct assignment are all memcpy's in the backend
+struct point byvalue(struct point p, int n) {
+  p.x += n;
+  p.y += n;
+  return p;
+}
+
+int byvalue2(struct point p) {
+  return p.x * 10 + p.y;
+}
+
 int main() {
   struct point a;
   a.x = 1;
@@ -49,5 +61,10 @@ int main() {
   grid[2][3].tag = 'g';
   grid[2][3].size = 4;
   if (grid[2][3].size != 4) return 2;
+  struct point b = a;
+  if (b.x != 1 || b.y != 2) return 3;
+  b = byvalue(a, 5);
+  if (b.x != 6 || b.y != 7) return 4;
+  if (byvalue2(b) != 67) return 5;
   return 0;
 }

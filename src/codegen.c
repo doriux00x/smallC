@@ -178,6 +178,9 @@ static void resolve_bin(Node *n) {
   Type *l = n->lhs->type;
   Type *r = n->rhs->type;
 
+  if (l->kind == TY_STRUCT || r->kind == TY_STRUCT)
+    error("invalid operands to binary operator");
+
   /* usual arithmetic conversions: any floating operand drags the
    * integer side up as a cast to the wider float type; % and the
    * bitwise/shift ops have no floating form at all */
@@ -256,17 +259,21 @@ static void resolve_unary(Node *n) {
       return;
     case OP_INC:
     case OP_DEC:
+      if (ot->kind == TY_STRUCT)
+        error("invalid operands to binary operator");
       n->type = ot;
       return;
     case '!':
       n->type = type_new(TY_INT);
       return;
     case '~':
-      if (is_real(ot))
+      if (is_real(ot) || ot->kind == TY_STRUCT)
         error("invalid operands to binary operator");
       n->type = ot;
       return;
     default:   /* + - keep the operand's type */
+      if (ot->kind == TY_STRUCT)
+        error("invalid operands to binary operator");
       n->type = ot;
       return;
   }
@@ -332,8 +339,8 @@ static void resolve_expr(Node *n) {
       resolve_expr(n->lhs);
       resolve_expr(n->rhs);
       Type *lt = n->lhs->type;
-      if (lt->kind == TY_STRUCT)
-        error("struct assignment not implemented");
+      if (n->op != '=' && lt->kind == TY_STRUCT)
+        error("invalid compound assignment on a struct");
       if (lt->kind == TY_ARRAY || lt->kind == TY_FUNC)
         error("can't assign to an array or function");
       if (n->op != '=' && !is_real(lt) && is_real(n->rhs->type))
@@ -359,6 +366,8 @@ static void resolve_expr(Node *n) {
       return;
     case ND_CAST:
       resolve_expr(n->lhs);
+      if (n->lhs->type->kind == TY_STRUCT || n->targ->kind == TY_STRUCT)
+        error("invalid cast on a struct");
       check_type_supported(n->targ);
       n->type = n->targ;
       return;
@@ -390,6 +399,17 @@ static void resolve_expr(Node *n) {
       for (Node *a = n->args; a; a = a->next)
         resolve_expr(a);
       n->type = ft->ret;
+      n->var = NULL;
+      if (n->type->kind == TY_STRUCT && scope != &base_scope) {
+        /* struct-returning call: hidden buffer in this frame for the
+         * callee to write into; the call expression's value is the
+         * buffer's address. global scope never reaches codegen */
+        Obj *o = new_obj("~ret", n->type);
+        o->is_local = 1;
+        cur_offset -= roundup(o->type->size, 8);
+        o->offset = cur_offset;
+        n->var = o;
+      }
       return;
     }
     case ND_INDEX:
@@ -423,6 +443,7 @@ static void resolve_block(Node *n) {
 }
 
 static Type *cur_ret;   /* return type of the function being walked */
+static Obj *cur_sret;   /* hidden "~ret" param Obj, for struct returns */
 
 static void resolve_stmt(Node *n) {
   switch (n->kind) {
@@ -445,8 +466,6 @@ static void resolve_stmt(Node *n) {
           n->init = cast_of(n->init, n->type);
         else if (!is_real(n->type) && is_real(n->init->type))
           n->init = cast_of(n->init, n->type);
-        if (n->type->kind == TY_STRUCT)
-          error("struct initializers not implemented");
       }
       return;
     }
@@ -483,7 +502,11 @@ static void resolve_stmt(Node *n) {
     case ND_RETURN:
       if (n->lhs) {
         resolve_expr(n->lhs);
-        if (is_real(cur_ret) && cur_ret->kind != n->lhs->type->kind)
+        if (cur_ret->kind == TY_STRUCT) {
+          if (n->lhs->type->kind != TY_STRUCT)
+            error("incompatible return type");
+          n->var = cur_sret;
+        } else if (is_real(cur_ret) && cur_ret->kind != n->lhs->type->kind)
           n->lhs = cast_of(n->lhs, cur_ret);
         else if (!is_real(cur_ret) && is_real(n->lhs->type))
           n->lhs = cast_of(n->lhs, cur_ret);
@@ -538,13 +561,20 @@ void resolve(Node *prog) {
 
     Type *ft = n->type;
     check_type_supported(ft->ret);
-    for (Node *p = ft->params; p; p = p->next) {
-      check_type_supported(p->type);
-      if (p->type->kind == TY_STRUCT)
-        error("passing structs by value not implemented");
+    if (ft->ret->kind == TY_STRUCT) {
+      /* struct-returning functions take a hidden first parameter: a
+       * pointer to the caller's return buffer. "~" can never start a
+       * real identifier, so the name cannot collide */
+      Node *sret = xmalloc(sizeof(Node));
+      memset(sret, 0, sizeof(Node));
+      sret->kind = ND_DECL;
+      sret->name = "~ret";
+      sret->type = ptr_to(ft->ret);
+      sret->next = ft->params;
+      ft->params = sret;
     }
-    if (ft->ret->kind == TY_STRUCT)
-      error("returning structs by value not implemented");
+    for (Node *p = ft->params; p; p = p->next)
+      check_type_supported(p->type);
 
     if (!n->body)
       continue;   /* prototype only */
@@ -552,6 +582,7 @@ void resolve(Node *prog) {
     enter_scope();
     cur_offset = 0;
     cur_ret = ft->ret;
+    cur_sret = NULL;
     for (Node *p = ft->params; p; p = p->next) {
       Obj *po = new_obj(p->name, p->type);
       po->is_local = 1;
@@ -560,6 +591,8 @@ void resolve(Node *prog) {
         po->type = ptr_to(po->type->base);
         p->type = po->type;
       }
+      if (p->name && strcmp(p->name, "~ret") == 0)
+        cur_sret = po;
       cur_offset -= roundup(po->type->size, 8);
       po->offset = cur_offset;
       push_var(po);
@@ -886,16 +919,26 @@ static void emit_combine(int op, Type *lhs_ty, Type *rhs_ty) {
 }
 
 static void gen_call(Node *n) {
-  int nargs = 0;
+  /* struct-returning callees write into a hidden buffer in our own
+   * frame (allocated in resolve); the buffer's address is passed as
+   * the first argument, and is also the call's result value. a bare
+   * struct-typed ND_VAR evaluates to its address, so the synthetic
+   * argument needs no extra & */
+  int has_sret = n->var && n->type->kind == TY_STRUCT;
+  int nargs = has_sret;
   for (Node *a = n->args; a; a = a->next)
     nargs++;
   Node **args = xmalloc(sizeof(Node *) * nargs);
+  Node sret_arg = {0};
   int i = 0;
-  for (Node *a = n->args; a; a = a->next) {
-    if (a->type->kind == TY_STRUCT)
-      error("passing structs by value not implemented");
-    args[i++] = a;
+  if (has_sret) {
+    sret_arg.kind = ND_VAR;
+    sret_arg.var = n->var;
+    sret_arg.type = n->type;
+    args[i++] = &sret_arg;
   }
+  for (Node *a = n->args; a; a = a->next)
+    args[i++] = a;
 
   /* SysV: ints go to rdi..r9, doubles to xmm0..7, each class counted
    * independently and in argument order; anything past the budget
@@ -980,6 +1023,10 @@ static void gen_call(Node *n) {
 
   /* drop the argument slots (and the filler) to restore the frame */
   fprintf(out, "  add $%d, %%rsp\n", (nargs + fill) * 8);
+
+  /* the call's value: the address of the return buffer */
+  if (has_sret)
+    fprintf(out, "  lea %d(%%rbp), %%rax\n", n->var->offset);
 }
 
 /* evaluate a condition; jump to lbl when it is false */
@@ -1051,6 +1098,21 @@ static void gen_expr(Node *n) {
     case ND_ASSIGN: {
       gen_addr(n->lhs);
       fprintf(out, "  push %%rax\n");
+
+      if (n->op == '=' && n->lhs->type->kind == TY_STRUCT) {
+        /* whole-struct assignment is a memcpy; the value of the
+         * expression is &lhs. the pushed address leaves rsp 8 off the
+         * SysV alignment, so a filler goes below it */
+        gen_expr(n->rhs);
+        fprintf(out, "  mov %%rax, %%rsi\n");
+        fprintf(out, "  mov (%%rsp), %%rdi\n");
+        fprintf(out, "  mov $%d, %%rdx\n", n->lhs->type->size);
+        fprintf(out, "  sub $8, %%rsp\n");
+        fprintf(out, "  call memcpy\n");
+        fprintf(out, "  add $8, %%rsp\n");
+        fprintf(out, "  pop %%rax\n");
+        return;
+      }
 
       if (n->op == '=') {
         gen_expr(n->rhs);
@@ -1297,10 +1359,19 @@ static void gen_stmt(Node *n) {
         if (n->init->kind == ND_STR && n->type->kind == TY_ARRAY)
           error("array initializers not implemented");
         gen_expr(n->init);
-        fprintf(out, "  push %%rax\n");
-        fprintf(out, "  lea %d(%%rbp), %%rdi\n", n->var->offset);
-        fprintf(out, "  pop %%rax\n");
-        store(n->type);
+        if (n->type->kind == TY_STRUCT) {
+          /* struct init is a memcpy; the init expression already
+           * evaluated to its address */
+          fprintf(out, "  mov %%rax, %%rsi\n");
+          fprintf(out, "  lea %d(%%rbp), %%rdi\n", n->var->offset);
+          fprintf(out, "  mov $%d, %%rdx\n", n->type->size);
+          fprintf(out, "  call memcpy\n");
+        } else {
+          fprintf(out, "  push %%rax\n");
+          fprintf(out, "  lea %d(%%rbp), %%rdi\n", n->var->offset);
+          fprintf(out, "  pop %%rax\n");
+          store(n->type);
+        }
       }
       return;
     case ND_EXPR_STMT:
@@ -1370,8 +1441,17 @@ static void gen_stmt(Node *n) {
       return;
     }
     case ND_RETURN:
-      if (n->lhs)
+      if (n->lhs) {
         gen_expr(n->lhs);
+        if (n->lhs->type->kind == TY_STRUCT) {
+          /* copy into the hidden return buffer; its address rides in
+           * rbp-relative memory, so no alignment juggling needed here */
+          fprintf(out, "  mov %%rax, %%rsi\n");
+          fprintf(out, "  mov %d(%%rbp), %%rdi\n", n->var->offset);
+          fprintf(out, "  mov $%d, %%rdx\n", n->lhs->type->size);
+          fprintf(out, "  call memcpy\n");
+        }
+      }
       fprintf(out, "  jmp .L.ret%d\n", ret_label);
       return;
     case ND_BREAK:
@@ -1580,13 +1660,42 @@ static void gen_func(Node *n) {
    * order, at 16(%rbp) and up. float parameters arrive as doubles
    * (see gen_call) and are narrowed on the way in */
   static char *argreg[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-  int idx = 0, sse = 0, stk = 0;
+  int idx, sse, stk;
+
+  /* pass 1: park every register-sourced parameter in its own slot,
+   * before the struct-param memcpys clobber all the argument
+   * registers (stack-sourced ones already live in memory, which
+   * memcpy never touches) */
+  idx = 0;
+  sse = 0;
   for (Node *p = n->type->params; p; p = p->next) {
+    Type *pt = p->var->type;
+    if (pt->kind == TY_FLOAT || pt->kind == TY_DOUBLE) {
+      if (sse < 8)
+        fprintf(out, "  movsd %%xmm%d, %d(%%rbp)\n", sse,
+                p->var->offset);
+      sse++;
+    } else {
+      if (idx < 6)
+        fprintf(out, "  mov %s, %d(%%rbp)\n", argreg[idx],
+                p->var->offset);
+      idx++;
+    }
+  }
+
+  idx = 0;
+  sse = 0;
+  stk = 0;
+  Obj *sret = NULL;
+  for (Node *p = n->type->params; p; p = p->next) {
+    if (p->var->name && strcmp(p->var->name, "~ret") == 0)
+      sret = p->var;
     if (p->var->type->kind == TY_FLOAT) {
       if (sse < 8)
-        fprintf(out, "  cvtsd2ss %%xmm%d, %%xmm%d\n"
-                     "  movss %%xmm%d, %d(%%rbp)\n",
-                sse, sse, sse, p->var->offset);
+        fprintf(out, "  movsd %d(%%rbp), %%xmm0\n"
+                     "  cvtsd2ss %%xmm0, %%xmm0\n"
+                     "  movss %%xmm0, %d(%%rbp)\n",
+                p->var->offset, p->var->offset);
       else
         fprintf(out, "  movsd %d(%%rbp), %%xmm0\n"
                      "  cvtsd2ss %%xmm0, %%xmm0\n"
@@ -1595,17 +1704,32 @@ static void gen_func(Node *n) {
       sse++;
     } else if (p->var->type->kind == TY_DOUBLE) {
       if (sse < 8)
-        fprintf(out, "  movsd %%xmm%d, %d(%%rbp)\n", sse,
-                p->var->offset);
+        fprintf(out, "  movsd %d(%%rbp), %%xmm0\n"
+                     "  movsd %%xmm0, %d(%%rbp)\n",
+                p->var->offset, p->var->offset);
       else
         fprintf(out, "  movsd %d(%%rbp), %%xmm0\n"
                      "  movsd %%xmm0, %d(%%rbp)\n",
                 16 + stk * 8, p->var->offset);
       sse++;
+    } else if (p->var->type->kind == TY_STRUCT) {
+      /* struct parameters arrive as addresses (see gen_call); copy
+       * the object into its slot. counts against the int budget. the
+       * address is taken from the slot parked in pass 1 (stack-sourced
+       * ones are already memory, memcpy never touches them) */
+      if (idx < 6)
+        fprintf(out, "  mov %d(%%rbp), %%rsi\n", p->var->offset);
+      else
+        fprintf(out, "  mov %d(%%rbp), %%rsi\n", 16 + stk * 8);
+      fprintf(out, "  lea %d(%%rbp), %%rdi\n", p->var->offset);
+      fprintf(out, "  mov $%d, %%rdx\n", p->var->type->size);
+      fprintf(out, "  call memcpy\n");
+      idx++;
     } else {
       if (idx < 6)
-        fprintf(out, "  mov %s, %d(%%rbp)\n", argreg[idx],
-                p->var->offset);
+        fprintf(out, "  mov %d(%%rbp), %%rax\n"
+                     "  mov %%rax, %d(%%rbp)\n",
+                p->var->offset, p->var->offset);
       else
         fprintf(out, "  mov %d(%%rbp), %%rax\n"
                      "  mov %%rax, %d(%%rbp)\n",
@@ -1622,6 +1746,8 @@ static void gen_func(Node *n) {
   gen_stmt(n->body);
 
   fprintf(out, ".L.ret%d:\n", ret_label);
+  if (sret)
+    fprintf(out, "  mov %d(%%rbp), %%rax\n", sret->offset);
   fprintf(out, "  mov %%rbp, %%rsp\n");
   fprintf(out, "  pop %%rbp\n");
   fprintf(out, "  ret\n");
