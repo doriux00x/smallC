@@ -53,6 +53,19 @@ static int is_punct_next(char *op) {
          memcmp(t->loc, op, t->len) == 0;
 }
 
+/* the ident is a typedef-name; it is the name being declared, not a
+ * type, when a declaration- or expression-ending punct follows it:
+ * ";", "," or any operator ("typedef char T;", "int T = 5;",
+ * "T += 2;" where T is a shadowing variable) */
+static int typedef_ident_is_name(Token *t) {
+  Token *n = t->next;
+  if (!n || n->kind != TK_PUNCT)
+    return 0;
+  if (n->len == 1)
+    return n->loc[0] == ';' || n->loc[0] == ',' || n->loc[0] == '=';
+  return 1;
+}
+
 static int consume_punct(char *op) {
   if (!is_punct(op))
     return 0;
@@ -96,6 +109,32 @@ static void register_tag(char *name, Type *type) {
   tags = t;
 }
 
+/* typedef names also live in their own registry, like tags; they are
+ * looked up at parse time because they change how declarations parse */
+typedef struct Typedef Typedef;
+struct Typedef {
+  Typedef *next;
+  char *name;
+  Type *type;
+};
+
+static Typedef *typedefs;
+
+static Type *find_typedef(char *name) {
+  for (Typedef *t = typedefs; t; t = t->next)
+    if (strcmp(t->name, name) == 0)
+      return t->type;
+  return NULL;
+}
+
+static void register_typedef(char *name, Type *type) {
+  Typedef *t = xmalloc(sizeof(Typedef));
+  t->name = name;
+  t->type = type;
+  t->next = typedefs;
+  typedefs = t;
+}
+
 static Member *parse_struct_members(void) {
   Member head = {0};
   Member **link = &head.next;
@@ -128,7 +167,9 @@ static int is_typespec_start(Token *t) {
   return t->kind == TK_VOID || t->kind == TK_CHAR || t->kind == TK_SHORT ||
          t->kind == TK_INT || t->kind == TK_LONG || t->kind == TK_SIGNED ||
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
-         t->kind == TK_DOUBLE || t->kind == TK_STRUCT;
+         t->kind == TK_DOUBLE || t->kind == TK_STRUCT ||
+         (t->kind == TK_IDENT && find_typedef(t->name) &&
+          !typedef_ident_is_name(t));
 }
 
 /* any run of type keywords: "unsigned long long" etc. */
@@ -170,6 +211,27 @@ static Type *parse_typespec(void) {
       if (!t)
         error_at(tok->loc, "unknown struct '%s'", tag);
       continue;
+    }
+    if (at(TK_IDENT)) {
+      Type *tt = find_typedef(tok->name);
+      /* same lookahead as is_typespec_start: a typedef-name before a
+       * declaration-ending punct is the name being declared, not the
+       * type ("typedef char T;", "int T = 5;") */
+      if (tt && !typedef_ident_is_name(tok)) {
+        tok = tok->next;
+        /* a typedef'd name works like a type keyword; modifiers before
+         * it ("unsigned myint") apply to a copy so the alias itself is
+         * never mutated (all uses share the registry entry) */
+        t = xmalloc(sizeof(Type));
+        *t = *tt;
+        if (longs && (t->kind == TY_INT || t->kind == TY_LONG))
+          t->kind = TY_LONG;
+        if (longs >= 2)
+          t->is_longlong = 1;
+        if (is_unsigned)
+          t->is_unsigned = 1;
+        return t;
+      }
     }
     break;
   }
@@ -586,6 +648,7 @@ static Node *parse_primary(void) {
 static Node *parse_declaration(void);
 static Node *parse_stmt(void);
 static Node *parse_block(void);
+static void parse_typedef(void);
 
 static Node *parse_block(void) {
   /* '{' already consumed */
@@ -744,6 +807,11 @@ static Node *parse_stmt(void) {
       error_at(tok->loc, "continue outside of loop");
     expect_punct(";");
     return node_new(ND_CONTINUE);
+  }
+
+  if (consume(TK_TYPEDEF)) {
+    parse_typedef();
+    return NULL;
   }
 
   if (is_typespec_start(tok)) {
@@ -929,7 +997,32 @@ static Node *parse_declarator(Type *base, Type **out) {
   return n;
 }
 
+/* "typedef <typespec> <declarator>, ...;": the declarator's type is
+ * registered under its name, no storage is created */
+static void parse_typedef(void) {
+  for (;;) {
+    Token *start = tok;
+    char *name;
+    Type *t = parse_typespec();
+    /* the typespec consumed nothing, so a known typedef-name at the
+     * front means no type was given ("typedef T;") */
+    if (tok == start && start->kind == TK_IDENT && find_typedef(start->name))
+      error_at(tok->loc, "typedef name required");
+    t = declarator(t, &name);
+    if (!name)
+      error_at(tok->loc, "typedef name required");
+    register_typedef(name, t);
+    if (!consume_punct(","))
+      break;
+  }
+  expect_punct(";");
+}
+
 static Node *parse_declaration(void) {
+  if (consume(TK_TYPEDEF)) {
+    parse_typedef();
+    return NULL;
+  }
   Node *first = NULL;
   Node **link = &first;
   Type *base = parse_typespec();

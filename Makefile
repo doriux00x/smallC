@@ -22,9 +22,10 @@ test: $(BIN)
 	./$(BIN) -a tests/funcptr.c
 	./$(BIN) -a tests/struct.c
 	./$(BIN) -a tests/switch.c
+	./$(BIN) -a tests/typedef.c
 	./$(BIN) -a tests/float.c
 	./$(BIN) -t tests/lexer.c
-	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct runfloat runinit runswitch; do \
+	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct runfloat runinit runswitch runtypedef; do \
 	  echo "== $$t =="; \
 	  ./$(BIN) tests/$$t.c; \
 	  $(CC) $(CFLAGS) -o $(OBJDIR)/$$t $(OBJDIR)/$$t.s; \
