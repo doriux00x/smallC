@@ -95,15 +95,13 @@ static int roundup(int n, int m) {
 }
 
 static void check_type_supported(Type *t) {
-  /* FIXME: floats need movss/movsd and cvtsi2sd before this gate
-   * can come down */
+  /* doubles use SSE; the 4-byte float type still has no backend */
   static Type *marked;   /* chain of structs being walked, so
                           * self-referential ones terminate */
   for (;;) {
     switch (t->kind) {
       case TY_FLOAT:
-      case TY_DOUBLE:
-        error("floating point not implemented in the backend yet");
+        error("float not implemented, use double");
         return;
       case TY_PTR:
       case TY_ARRAY:
@@ -141,11 +139,25 @@ static Type *result_type(Type *a, Type *b) {
 
 static void resolve_expr(Node *n);
 
+/* wrap a value conversion; the backend knows int->double
+ * (cvtsi2sd) and double->int (cvttsd2si) only */
+static Node *cast_of(Node *n, Type *to) {
+  if (n->type->kind == TY_DOUBLE && to->kind == TY_DOUBLE)
+    return n;
+  if (n->type->kind != TY_DOUBLE && to->kind != TY_DOUBLE)
+    return n;
+  Node *c = xmalloc(sizeof(Node));
+  c->kind = ND_CAST;
+  c->lhs = n;
+  c->targ = to;
+  c->type = to;
+  return c;
+}
+
 /* the usual scheduler: left operand wins for the result type,
  * unsignedness propagates from either side */
 static void resolve_num(Node *n) {
-  Type *t = type_new(TY_INT);
-  n->type = t;
+  n->type = n->is_float ? type_new(TY_DOUBLE) : type_new(TY_INT);
 }
 
 static void resolve_bin(Node *n) {
@@ -154,6 +166,20 @@ static void resolve_bin(Node *n) {
 
   Type *l = n->lhs->type;
   Type *r = n->rhs->type;
+
+  /* usual arithmetic conversions: any double operand drags the
+   * integer side up as a cast; % and the bitwise/shift ops have
+   * no double form at all */
+  int dbl = l->kind == TY_DOUBLE || r->kind == TY_DOUBLE;
+  if (dbl) {
+    if (n->op == '%' || n->op == '&' || n->op == '|' ||
+        n->op == '^' || n->op == OP_SHL || n->op == OP_SHR)
+      error("invalid operands to binary operator");
+    if (l->kind != TY_DOUBLE)
+      n->lhs = cast_of(n->lhs, type_new(TY_DOUBLE));
+    else if (r->kind != TY_DOUBLE)
+      n->rhs = cast_of(n->rhs, type_new(TY_DOUBLE));
+  }
 
   switch (n->op) {
     case '+':
@@ -174,10 +200,14 @@ static void resolve_bin(Node *n) {
         n->type = r;
         return;
       }
-      n->type = result_type(l, r);
+      n->type = dbl ? type_new(TY_DOUBLE) : result_type(l, r);
       return;
     case '*':
     case '/':
+      if (l->kind == TY_PTR || r->kind == TY_PTR)
+        error("invalid operands to binary operator");
+      n->type = dbl ? type_new(TY_DOUBLE) : result_type(l, r);
+      return;
     case '%':
     case '&':
     case '|':
@@ -219,7 +249,12 @@ static void resolve_unary(Node *n) {
     case '!':
       n->type = type_new(TY_INT);
       return;
-    default:   /* + - ~ keep the operand's type */
+    case '~':
+      if (ot->kind == TY_DOUBLE)
+        error("invalid operands to binary operator");
+      n->type = ot;
+      return;
+    default:   /* + - keep the operand's type */
       n->type = ot;
       return;
   }
@@ -229,6 +264,12 @@ static void resolve_cond(Node *n) {
   resolve_expr(n->cond);
   resolve_expr(n->then);
   resolve_expr(n->els);
+  if (n->then->type->kind == TY_DOUBLE &&
+      n->els->type->kind != TY_DOUBLE)
+    n->els = cast_of(n->els, type_new(TY_DOUBLE));
+  else if (n->then->type->kind != TY_DOUBLE &&
+           n->els->type->kind == TY_DOUBLE)
+    n->then = cast_of(n->then, type_new(TY_DOUBLE));
   n->type = n->then->type;
 }
 
@@ -276,15 +317,24 @@ static void resolve_expr(Node *n) {
     case ND_ASSIGN: {
       resolve_expr(n->lhs);
       resolve_expr(n->rhs);
-      if (n->lhs->type->kind == TY_STRUCT)
+      Type *lt = n->lhs->type;
+      if (lt->kind == TY_STRUCT)
         error("struct assignment not implemented");
-      if (n->lhs->type->kind == TY_ARRAY ||
-          n->lhs->type->kind == TY_FUNC)
+      if (lt->kind == TY_ARRAY || lt->kind == TY_FUNC)
         error("can't assign to an array or function");
-      if (n->op != '=' && n->lhs->type->kind == TY_PTR &&
+      if (n->op != '=' && lt->kind != TY_DOUBLE &&
+          n->rhs->type->kind == TY_DOUBLE)
+        error("unsupported compound assignment");
+      if (lt->kind == TY_DOUBLE &&
+          n->rhs->type->kind != TY_DOUBLE)
+        n->rhs = cast_of(n->rhs, type_new(TY_DOUBLE));
+      else if (lt->kind != TY_DOUBLE &&
+               n->rhs->type->kind == TY_DOUBLE)
+        n->rhs = cast_of(n->rhs, lt);
+      if (n->op != '=' && lt->kind == TY_PTR &&
           n->op != OP_ADD_ASSIGN && n->op != OP_SUB_ASSIGN)
         error("invalid compound assignment on a pointer");
-      n->type = n->lhs->type;
+      n->type = lt;
       return;
     }
     case ND_BIN:
@@ -356,6 +406,8 @@ static void resolve_block(Node *n) {
   leave_scope();
 }
 
+static Type *cur_ret;   /* return type of the function being walked */
+
 static void resolve_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -409,8 +461,15 @@ static void resolve_stmt(Node *n) {
       leave_scope();
       return;
     case ND_RETURN:
-      if (n->lhs)
+      if (n->lhs) {
         resolve_expr(n->lhs);
+        if (cur_ret->kind == TY_DOUBLE &&
+            n->lhs->type->kind != TY_DOUBLE)
+          n->lhs = cast_of(n->lhs, type_new(TY_DOUBLE));
+        else if (cur_ret->kind != TY_DOUBLE &&
+                 n->lhs->type->kind == TY_DOUBLE)
+          n->lhs = cast_of(n->lhs, cur_ret);
+      }
       return;
     case ND_BREAK:
     case ND_CONTINUE:
@@ -474,6 +533,7 @@ void resolve(Node *prog) {
 
     enter_scope();
     cur_offset = 0;
+    cur_ret = ft->ret;
     for (Node *p = ft->params; p; p = p->next) {
       Obj *po = new_obj(p->name, p->type);
       po->is_local = 1;
@@ -504,9 +564,38 @@ static void section(char *s) {
   fprintf(out, "  .section %s\n", s);
 }
 
-/* load the value at (%rax) into %rax, sign or zero extending to fit
- * the declared type. this is where signedness enters the register */
+/* double constants have no immediate form; each distinct literal gets
+ * a .rodata slot, registered here on first use. forward references
+ * are fine, GAS resolves them within the file */
+static double consts[256];
+static int consts_n;
+
+static void emit_const(double d) {
+  for (int i = 0; i < consts_n; i++)
+    if (consts[i] == d) {
+      fprintf(out, "  movsd .LC%d(%%rip), %%xmm0\n", i);
+      return;
+    }
+  if (consts_n == 256)
+    error("too many floating point constants");
+  consts[consts_n] = d;
+  unsigned long long bits;
+  memcpy(&bits, &d, 8);
+  fprintf(out, "  movsd .LC%d(%%rip), %%xmm0\n", consts_n);
+  section(".rodata");
+  fprintf(out, ".LC%d:\n  .quad 0x%llx\n", consts_n, bits);
+  section(".text");
+  consts_n++;
+}
+
+/* load the value at (%rax) into %rax (ints) or %xmm0 (doubles),
+ * sign or zero extending to fit the declared type. this is where
+ * signedness enters the register */
 static void load(Type *t) {
+  if (t->kind == TY_DOUBLE) {
+    fprintf(out, "  movsd (%%rax), %%xmm0\n");
+    return;
+  }
   switch (t->size) {
     case 1:
       fprintf(out, "  %s (%%rax), %%eax\n",
@@ -528,8 +617,12 @@ static void load(Type *t) {
   }
 }
 
-/* store %rax at (%rdi) */
+/* store %rax (ints) or %xmm0 (doubles) at (%rdi) */
 static void store(Type *t) {
+  if (t->kind == TY_DOUBLE) {
+    fprintf(out, "  movsd %%xmm0, (%%rdi)\n");
+    return;
+  }
   switch (t->size) {
     case 1:
       fprintf(out, "  mov %%al, (%%rdi)\n");

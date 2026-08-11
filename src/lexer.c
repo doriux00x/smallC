@@ -61,6 +61,46 @@ static char decode_escape(char *start, char **pp) {
   return c;
 }
 
+/* 1.5 / 1e3 / 1.5e-3 / .5 are floats; hex stays on the strtol path.
+ * requires a digit after '.' unless an exponent picks up the slack
+ * ("1.e3" is legal C, so is it here) */
+static int is_float_lit(char *p) {
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
+    return 0;
+  if (p[0] == '.')
+    return isdigit((unsigned char)p[1]);
+  while (isdigit((unsigned char)*p))
+    p++;
+  if (p[0] == '.') {
+    p++;
+    return isdigit((unsigned char)p[0]) ||
+           p[0] == 'e' || p[0] == 'E';
+  }
+  if (p[0] == 'e' || p[0] == 'E') {
+    p++;
+    if (*p == '+' || *p == '-')
+      p++;
+    return isdigit((unsigned char)p[0]);
+  }
+  return 0;
+}
+
+static Token *read_number(char *start, char **pp) {
+  char *p = *pp;
+  Token *t = tok_new(TK_NUM, start, 0);
+  if (is_float_lit(p)) {
+    /* FIXME: strtod silently gives inf on overflow */
+    t->fval = strtod(p, &p);
+    t->is_float = 1;
+  } else {
+    /* FIXME: strtol clamps on overflow, and we truncate to int */
+    t->val = (int)strtol(p, &p, 0);
+  }
+  t->len = p - start;
+  *pp = p;
+  return t;
+}
+
 Token *tokenize(char *p) {
   Token head = {0};
   Token *cur = &head;
@@ -108,12 +148,10 @@ Token *tokenize(char *p) {
       continue;
     }
 
-    if (isdigit((unsigned char)*p)) {
+    if (isdigit((unsigned char)*p) ||
+        (*p == '.' && isdigit((unsigned char)p[1]))) {
       char *start = p;
-      Token *t = tok_new(TK_NUM, start, 0);
-      /* FIXME: strtol clamps on overflow, and we truncate to int */
-      t->val = (int)strtol(p, &p, 0);
-      t->len = p - start;
+      Token *t = read_number(start, &p);
       cur = cur->next = t;
       continue;
     }
