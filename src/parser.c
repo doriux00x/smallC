@@ -301,6 +301,7 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_INT || t->kind == TK_LONG || t->kind == TK_SIGNED ||
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
          t->kind == TK_DOUBLE || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
+         t->kind == TK_UNION ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -337,6 +338,30 @@ static Type *parse_typespec(void) {
         error_at(tok->loc, "unknown enum '%s'", tag);
       }
       return type_new(TY_INT);
+    }
+    if (consume(TK_UNION)) {
+      char *tag = NULL;
+      if (at(TK_IDENT))
+        tag = expect(TK_IDENT, "union tag")->name;
+      if (consume_punct("{")) {
+        /* the tag goes in before the members, so the body can
+         * reference itself (union Node *next) */
+        Type *ut = union_type();
+        if (tag)
+          register_tag(tag, ut);
+        ut->members = parse_struct_members();
+        if (!ut->members)
+          error_at(tok->loc, "empty union");
+        layout_union(ut);
+        t = ut;
+        continue;
+      }
+      if (!tag)
+        error_at(tok->loc, "expected union tag");
+      t = find_tag(tag);
+      if (!t || t->kind != TY_UNION)
+        error_at(tok->loc, "unknown union '%s'", tag);
+      continue;
     }
     if (consume(TK_STRUCT)) {
       char *tag = NULL;

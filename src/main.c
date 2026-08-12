@@ -40,13 +40,15 @@ static void dump_type(Type *t) {
       printf(") -> ");
       dump_type(t->ret);
       return;
-    case TY_STRUCT: {
+    case TY_STRUCT:
+    case TY_UNION: {
       for (Type *t2 = dumping; t2; t2 = t2->mark_prev)
         if (t2 == t) {
-          printf("struct(...)");
+          printf("%s(...)", t->kind == TY_STRUCT ? "struct" : "union");
           return;
         }
-      printf("struct(align %d, size %d){", t->align, t->size);
+      printf("%s(align %d, size %d){", t->kind == TY_STRUCT ? "struct" : "union",
+             t->align, t->size);
       t->mark_prev = dumping;
       dumping = t;
       for (Member *m = t->members; m; m = m->next) {

@@ -116,6 +116,7 @@ static void check_type_supported(Type *t) {
         t = t->base;
         continue;
       case TY_STRUCT:
+      case TY_UNION:
         for (Type *t2 = marked; t2; t2 = t2->mark_prev)
           if (t2 == t)
             return;
@@ -188,7 +189,8 @@ static void resolve_bin(Node *n) {
   Type *l = n->lhs->type;
   Type *r = n->rhs->type;
 
-  if (l->kind == TY_STRUCT || r->kind == TY_STRUCT)
+  if (l->kind == TY_STRUCT || r->kind == TY_STRUCT ||
+      l->kind == TY_UNION || r->kind == TY_UNION)
     error("invalid operands to binary operator");
 
   /* usual arithmetic conversions: any floating operand drags the
@@ -269,7 +271,7 @@ static void resolve_unary(Node *n) {
       return;
     case OP_INC:
     case OP_DEC:
-      if (ot->kind == TY_STRUCT)
+      if (ot->kind == TY_STRUCT || ot->kind == TY_UNION)
         error("invalid operands to binary operator");
       n->type = ot;
       return;
@@ -277,12 +279,12 @@ static void resolve_unary(Node *n) {
       n->type = type_new(TY_INT);
       return;
     case '~':
-      if (is_real(ot) || ot->kind == TY_STRUCT)
+      if (is_real(ot) || ot->kind == TY_STRUCT || ot->kind == TY_UNION)
         error("invalid operands to binary operator");
       n->type = ot;
       return;
     default:   /* + - keep the operand's type */
-      if (ot->kind == TY_STRUCT)
+      if (ot->kind == TY_STRUCT || ot->kind == TY_UNION)
         error("invalid operands to binary operator");
       n->type = ot;
       return;
@@ -330,11 +332,13 @@ static void resolve_expr(Node *n) {
       Type *st;
       if (n->is_pntr) {
         if (n->lhs->type->kind != TY_PTR ||
-            n->lhs->type->base->kind != TY_STRUCT)
+            (n->lhs->type->base->kind != TY_STRUCT &&
+             n->lhs->type->base->kind != TY_UNION))
           error("'->' on a non-struct pointer");
         st = n->lhs->type->base;
       } else {
-        if (n->lhs->type->kind != TY_STRUCT)
+        if (n->lhs->type->kind != TY_STRUCT &&
+            n->lhs->type->kind != TY_UNION)
           error("'.' on a non-struct");
         st = n->lhs->type;
       }
@@ -349,7 +353,7 @@ static void resolve_expr(Node *n) {
       resolve_expr(n->lhs);
       resolve_expr(n->rhs);
       Type *lt = n->lhs->type;
-      if (n->op != '=' && lt->kind == TY_STRUCT)
+      if (n->op != '=' && (lt->kind == TY_STRUCT || lt->kind == TY_UNION))
         error("invalid compound assignment on a struct");
       if (lt->kind == TY_ARRAY || lt->kind == TY_FUNC)
         error("can't assign to an array or function");
@@ -376,7 +380,8 @@ static void resolve_expr(Node *n) {
       return;
     case ND_CAST:
       resolve_expr(n->lhs);
-      if (n->lhs->type->kind == TY_STRUCT || n->targ->kind == TY_STRUCT)
+      if (n->lhs->type->kind == TY_STRUCT || n->targ->kind == TY_STRUCT ||
+        n->lhs->type->kind == TY_UNION || n->targ->kind == TY_UNION)
         error("invalid cast on a struct");
       check_type_supported(n->targ);
       n->type = n->targ;
@@ -410,7 +415,8 @@ static void resolve_expr(Node *n) {
         resolve_expr(a);
       n->type = ft->ret;
       n->var = NULL;
-      if (n->type->kind == TY_STRUCT && scope != &base_scope) {
+      if ((n->type->kind == TY_STRUCT || n->type->kind == TY_UNION) &&
+          scope != &base_scope) {
         /* struct-returning call: hidden buffer in this frame for the
          * callee to write into; the call expression's value is the
          * buffer's address. global scope never reaches codegen */
@@ -469,7 +475,7 @@ static int init_leaf_n;
 static int init_counting;   /* flex-array length probe: no appends */
 
 static int is_agg(Type *t) {
-  return t->kind == TY_ARRAY || t->kind == TY_STRUCT;
+  return t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_UNION;
 }
 
 static void init_add(Type *ty, int off, Node *expr) {
@@ -493,6 +499,8 @@ static int init_scalars(Type *ty) {
       c += init_scalars(m->type);
     return c;
   }
+  if (ty->kind == TY_UNION)
+    return 1;   /* one list element covers the whole union */
   return 1;
 }
 
@@ -547,7 +555,10 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
     }
     return es;
   }
-  for (Member *m = ty->members; m; m = m->next) {
+  /* a union consumes list elements for its first member only; the
+   * rest of the object zero-fills */
+  for (Member *m = ty->members; m;
+       m = (ty->kind == TY_UNION) ? NULL : m->next) {
     if (!es) {
       for (; m; m = m->next) {
         if (is_agg(m->type))
@@ -820,8 +831,9 @@ static void resolve_stmt(Node *n) {
     case ND_RETURN:
       if (n->lhs) {
         resolve_expr(n->lhs);
-        if (cur_ret->kind == TY_STRUCT) {
-          if (n->lhs->type->kind != TY_STRUCT)
+        if (cur_ret->kind == TY_STRUCT || cur_ret->kind == TY_UNION) {
+          if (n->lhs->type->kind != TY_STRUCT &&
+              n->lhs->type->kind != TY_UNION)
             error("incompatible return type");
           n->var = cur_sret;
         } else if (is_real(cur_ret) && cur_ret->kind != n->lhs->type->kind)
@@ -887,7 +899,7 @@ void resolve(Node *prog) {
 
     Type *ft = n->type;
     check_type_supported(ft->ret);
-    if (ft->ret->kind == TY_STRUCT) {
+    if (ft->ret->kind == TY_STRUCT || ft->ret->kind == TY_UNION) {
       /* struct-returning functions take a hidden first parameter: a
        * pointer to the caller's return buffer. "~" can never start a
        * real identifier, so the name cannot collide */
@@ -1250,7 +1262,7 @@ static void gen_call(Node *n) {
    * the first argument, and is also the call's result value. a bare
    * struct-typed ND_VAR evaluates to its address, so the synthetic
    * argument needs no extra & */
-  int has_sret = n->var && n->type->kind == TY_STRUCT;
+  int has_sret = n->var && (n->type->kind == TY_STRUCT || n->type->kind == TY_UNION);
   int nargs = has_sret;
   for (Node *a = n->args; a; a = a->next)
     nargs++;
@@ -1418,14 +1430,15 @@ static void gen_expr(Node *n) {
     case ND_VAR:
       gen_addr(n);
       if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
-          n->type->kind != TY_STRUCT)
+          n->type->kind != TY_STRUCT && n->type->kind != TY_UNION)
         load(n->type);
       return;
     case ND_ASSIGN: {
       gen_addr(n->lhs);
       fprintf(out, "  push %%rax\n");
 
-      if (n->op == '=' && n->lhs->type->kind == TY_STRUCT) {
+      if (n->op == '=' && (n->lhs->type->kind == TY_STRUCT ||
+                           n->lhs->type->kind == TY_UNION)) {
         /* whole-struct assignment is a memcpy; the value of the
          * expression is &lhs. the pushed address leaves rsp 8 off the
          * SysV alignment, so a filler goes below it */
@@ -1526,7 +1539,8 @@ static void gen_expr(Node *n) {
           /* the operand is a pointer; its value is the address
            * (and *fp on a function pointer is the function) */
           gen_expr(n->lhs);
-          if (n->type->kind != TY_FUNC && n->type->kind != TY_STRUCT)
+          if (n->type->kind != TY_FUNC && n->type->kind != TY_STRUCT &&
+            n->type->kind != TY_UNION)
             load(n->type);
           return;
         case '+':
@@ -1652,13 +1666,13 @@ static void gen_expr(Node *n) {
     case ND_INDEX:
       gen_addr(n);
       if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
-          n->type->kind != TY_STRUCT)
+          n->type->kind != TY_STRUCT && n->type->kind != TY_UNION)
         load(n->type);
       return;
     case ND_MEMBER:
       gen_addr(n);
       if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
-          n->type->kind != TY_STRUCT)
+          n->type->kind != TY_STRUCT && n->type->kind != TY_UNION)
         load(n->type);
       return;
     case ND_SIZEOF:
@@ -1722,7 +1736,7 @@ static void gen_stmt(Node *n) {
           return;
         }
         gen_expr(n->init);
-        if (n->type->kind == TY_STRUCT) {
+        if (n->type->kind == TY_STRUCT || n->type->kind == TY_UNION) {
           /* struct init is a memcpy; the init expression already
            * evaluated to its address */
           fprintf(out, "  mov %%rax, %%rsi\n");
@@ -1829,7 +1843,7 @@ static void gen_stmt(Node *n) {
     case ND_RETURN:
       if (n->lhs) {
         gen_expr(n->lhs);
-        if (n->lhs->type->kind == TY_STRUCT) {
+        if (n->lhs->type->kind == TY_STRUCT || n->lhs->type->kind == TY_UNION) {
           /* copy into the hidden return buffer; its address rides in
            * rbp-relative memory, so no alignment juggling needed here */
           fprintf(out, "  mov %%rax, %%rsi\n");
@@ -2131,7 +2145,8 @@ static void gen_func(Node *n) {
                      "  movsd %%xmm0, %d(%%rbp)\n",
                 16 + stk * 8, p->var->offset);
       sse++;
-    } else if (p->var->type->kind == TY_STRUCT) {
+    } else if (p->var->type->kind == TY_STRUCT ||
+             p->var->type->kind == TY_UNION) {
       /* struct parameters arrive as addresses (see gen_call); copy
        * the object into its slot. counts against the int budget. the
        * address is taken from the slot parked in pass 1 (stack-sourced

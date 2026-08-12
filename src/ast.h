@@ -6,7 +6,7 @@ typedef struct Obj Obj;
 
 typedef enum {
   TY_VOID, TY_CHAR, TY_SHORT, TY_INT, TY_LONG,
-  TY_FLOAT, TY_DOUBLE, TY_PTR, TY_ARRAY, TY_FUNC, TY_STRUCT,
+  TY_FLOAT, TY_DOUBLE, TY_PTR, TY_ARRAY, TY_FUNC, TY_STRUCT, TY_UNION,
 } TypeKind;
 
 typedef struct Type Type;
@@ -29,7 +29,7 @@ struct Type {
   Type *base;        /* pointee / element type */
   Type *ret;         /* TY_FUNC return type */
   Node *params;      /* TY_FUNC params, ND_DECL nodes linked by next */
-  Member *members;   /* TY_STRUCT */
+  Member *members;   /* TY_STRUCT / TY_UNION */
   Type *mark_prev;   /* cycle guard for the -a dump & struct member walks */
 };
 
@@ -38,7 +38,9 @@ Type *ptr_to(Type *base);
 Type *array_of(Type *base, int len);
 Type *func_type(Type *ret);
 Type *struct_type(void);
+Type *union_type(void);
 void layout_struct(Type *t);
+void layout_union(Type *t);
 int type_size(Type *t);
 
 typedef enum {

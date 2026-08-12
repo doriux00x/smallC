@@ -25,7 +25,8 @@ int type_size(Type *t) {
     case TY_PTR:    return 8;
     case TY_ARRAY:  return type_size(t->base) * t->array_len;
     case TY_FUNC:   return 0;   /* sizeof(func) illegal; designators decay */
-    case TY_STRUCT: return t->size;
+    case TY_STRUCT:
+    case TY_UNION:  return t->size;
   }
   return 0;
 }
@@ -42,7 +43,8 @@ static int type_align(Type *t) {
     case TY_DOUBLE:
     case TY_PTR:    return 8;
     case TY_ARRAY:  return type_align(t->base);
-    case TY_STRUCT: return t->align;
+    case TY_STRUCT:
+    case TY_UNION:  return t->align;
     default:        return 1;
   }
 }
@@ -53,6 +55,14 @@ static int type_align(Type *t) {
 Type *struct_type(void) {
   Type *t = type_zalloc();
   t->kind = TY_STRUCT;
+  t->size = 0;
+  t->align = 1;
+  return t;
+}
+
+Type *union_type(void) {
+  Type *t = type_zalloc();
+  t->kind = TY_UNION;
   t->size = 0;
   t->align = 1;
   return t;
@@ -71,6 +81,23 @@ void layout_struct(Type *t) {
   }
   t->align = max_align;
   t->size = (off + max_align - 1) / max_align * max_align;
+}
+
+/* every member sits at offset 0; size is the widest member, rounded
+ * up to the union's alignment */
+void layout_union(Type *t) {
+  int max_align = 1;
+  int max_size = 0;
+  for (Member *m = t->members; m; m = m->next) {
+    m->offset = 0;
+    if (m->type->size > max_size)
+      max_size = m->type->size;
+    int a = type_align(m->type);
+    if (a > max_align)
+      max_align = a;
+  }
+  t->align = max_align;
+  t->size = (max_size + max_align - 1) / max_align * max_align;
 }
 
 Type *type_new(TypeKind k) {
