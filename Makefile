@@ -30,9 +30,10 @@ test: $(BIN)
 	./$(BIN) -a tests/goto.c
 	./$(BIN) -a tests/bool.c
 	./$(BIN) -a tests/volatile.c
+	./$(BIN) -a tests/register.c
 	./$(BIN) -a tests/float.c
 	./$(BIN) -t tests/lexer.c
-	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct runfloat runinit runswitch runtypedef runenum rununion runconst runstatic rungoto runbool runvolatile; do \
+	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct runfloat runinit runswitch runtypedef runenum rununion runconst runstatic rungoto runbool runvolatile runregister; do \
 	  echo "== $$t =="; \
 	  ./$(BIN) tests/$$t.c; \
 	  $(CC) $(CFLAGS) -o $(OBJDIR)/$$t $(OBJDIR)/$$t.s; \

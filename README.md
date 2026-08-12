@@ -30,6 +30,11 @@ The language subset grows all the time. As of now it handles:
   volatile needs no special code generation; it is accepted and
   stored on the type so `volatile` code compiles as written.
 - static and extern storage classes
+- The register storage class, on locals and parameters. It is a
+  hint, and the backend ignores it: every local already gets a
+  stack slot and stays in memory only on calls, which is what
+  register asks for anyway. Taking the address of one is
+  accepted too, where C would reject it.
 - switch / case / default, including case labels hidden inside
   blocks and branches, and constant expressions in case labels
 - goto and statement labels, forward or backward, into and out of
@@ -52,8 +57,7 @@ Known gaps, in no particular order:
 
 - No preprocessor. There is no `#include` and no `#define`. To call
   libc functions you declare your own prototypes, as the tests do.
-- No `register`, no variadic functions, no VLA, no compound
-  literals.
+- No variadic functions, no VLA, no compound literals.
 - Only 64-bit x86 (System V ABI, Linux/ELF). No Windows, no ARM,
   no 32-bit.
 - Global float/double initializers must be constant expressions,

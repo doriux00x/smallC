@@ -302,7 +302,7 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
          t->kind == TK_DOUBLE || t->kind == TK_BOOL || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
          t->kind == TK_UNION || t->kind == TK_CONST || t->kind == TK_VOLATILE ||
-         t->kind == TK_STATIC || t->kind == TK_EXTERN ||
+         t->kind == TK_STATIC || t->kind == TK_EXTERN || t->kind == TK_REGISTER ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -1072,6 +1072,7 @@ static Type *parse_params(Type *ret) {
       expect_punct(")");
     } else {
       for (;;) {
+        consume(TK_REGISTER);   /* hint, ignored like the locals */
         Type *pt = parse_typespec();
         char *pname = NULL;
         pt = declarator(pt, &pname);   /* abstract declarators allowed */
@@ -1254,19 +1255,23 @@ static void parse_typedef(void) {
 
 static Node *parse_declaration(void) {
   /* storage class prefixes: the flags live on the produced nodes;
-   * typedef with a storage class is rejected below */
-  int is_static = 0, is_extern = 0;
+   * typedef with a storage class is rejected below. register is a
+   * hint the backend ignores (every local already lives in the
+   * frame and spills to memory only on call), so it sets no flag */
+  int is_static = 0, is_extern = 0, is_reg = 0;
   for (;;) {
     if (consume(TK_STATIC))
       is_static = 1;
     else if (consume(TK_EXTERN))
       is_extern = 1;
+    else if (consume(TK_REGISTER))
+      is_reg = 1;
     else
       break;
   }
 
   if (consume(TK_TYPEDEF)) {
-    if (is_static || is_extern)
+    if (is_static || is_extern || is_reg)
       error_at(tok->loc, "storage class on a typedef");
     parse_typedef();
     return NULL;
