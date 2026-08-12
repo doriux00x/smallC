@@ -58,6 +58,8 @@ typedef enum {
   ND_RETURN,         /* lhs or NULL */
   ND_BREAK,
   ND_CONTINUE,
+  ND_GOTO,           /* goto name; jumps to the label in this function */
+  ND_LABEL,          /* name : stmt; body is the labelled statement */
   ND_NUM,            /* integer literal */
   ND_STR,            /* string literal */
   ND_VAR,            /* variable reference */

@@ -729,6 +729,10 @@ static void walk_cases(Node *s, void (*fn)(Node *, void *), void *arg) {
       case ND_FOR:
         walk_cases(s->then, fn, arg);
         break;
+      case ND_LABEL:
+        if (s->body)
+          walk_cases(s->body, fn, arg);
+        break;
       case ND_SWITCH:
         break;
       default:
@@ -773,6 +777,11 @@ static void resolve_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
       resolve_block(n);
+      return;
+    case ND_LABEL:
+      resolve_stmt(n->body);
+      return;
+    case ND_GOTO:
       return;
     case ND_DECL: {
       if (n->is_static || n->is_extern)
@@ -1722,6 +1731,57 @@ static void gen_case_label(Node *c, void *arg) {
   fprintf(out, "  je .L%d\n", c->label);
 }
 
+/* label registry for one function: name -> jump label number.
+ * gotos are emitted in a second pass over the body, so forward
+ * references resolve without fixups (labels are numbered up front) */
+static char *lbl_names[256];
+static int lbl_nums[256];
+static int lbl_cnt;
+
+/* walk the statement tree collecting every label; the shapes mirror
+ * walk_cases. a goto into a block is fine: all locals live in the
+ * function frame, and C only forbids it for VLA storage */
+static void collect_labels(Node *s) {
+  for (; s; s = s->next) {
+    if (s->kind == ND_LABEL) {
+      for (int i = 0; i < lbl_cnt; i++)
+        if (strcmp(lbl_names[i], s->name) == 0)
+          error("redefinition of label '%s'", s->name);
+      lbl_names[lbl_cnt] = s->name;
+      lbl_nums[lbl_cnt] = labeln++;
+      s->label = lbl_nums[lbl_cnt];
+      lbl_cnt++;
+      if (s->body)
+        collect_labels(s->body);
+      continue;
+    }
+    switch (s->kind) {
+      case ND_BLOCK:
+        collect_labels(s->body);
+        break;
+      case ND_IF:
+        collect_labels(s->then);
+        if (s->els)
+          collect_labels(s->els);
+        break;
+      case ND_WHILE:
+      case ND_DO_WHILE:
+      case ND_FOR:
+        collect_labels(s->then);
+        break;
+      case ND_SWITCH:
+        collect_labels(s->body);
+        break;
+      case ND_CASE:
+        if (s->body)
+          collect_labels(s->body);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
 static void gen_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -1855,6 +1915,20 @@ static void gen_stmt(Node *n) {
       gen_stmt(n->body);
       brk_n--;
       fprintf(out, ".L%d:\n", end);
+      return;
+    }
+    case ND_LABEL:
+      fprintf(out, ".L%d:\n", n->label);
+      gen_stmt(n->body);
+      return;
+    case ND_GOTO: {
+      int target = -1;
+      for (int i = 0; i < lbl_cnt; i++)
+        if (strcmp(lbl_names[i], n->name) == 0)
+          target = lbl_nums[i];
+      if (target < 0)
+        error("use of undefined label '%s'", n->name);
+      fprintf(out, "  jmp .L%d\n", target);
       return;
     }
     case ND_CASE:
@@ -2207,6 +2281,8 @@ static void gen_func(Node *n) {
 
   brk_n = 0;
   cont_n = 0;
+  lbl_cnt = 0;
+  collect_labels(n->body);
   ret_label = labeln++;
   gen_stmt(n->body);
 

@@ -997,6 +997,27 @@ static Node *parse_stmt(void) {
     return node_new(ND_CONTINUE);
   }
 
+  if (consume(TK_GOTO)) {
+    Node *n = node_new(ND_GOTO);
+    n->name = expect(TK_IDENT, "label name")->name;
+    expect_punct(";");
+    return n;
+  }
+
+  /* "name : stmt" is a label. an identifier followed by ":" can never
+   * start a declaration here (declarations are handled above via
+   * is_typespec_start), so no ambiguity with typedef names or casts */
+  if (tok->kind == TK_IDENT && tok->next &&
+      tok->next->kind == TK_PUNCT && tok->next->len == 1 &&
+      tok->next->loc[0] == ':') {
+    Token *ident = expect_ident("label name");
+    Node *n = node_new(ND_LABEL);
+    n->name = ident->name;
+    expect_punct(":");
+    n->body = parse_stmt();
+    return n;
+  }
+
   if (consume(TK_TYPEDEF)) {
     parse_typedef();
     return NULL;

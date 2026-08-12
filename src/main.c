@@ -253,6 +253,13 @@ static void dump_stmt(Node *n, int d) {
       }
       dump_stmt(n->body, d + 1);
       return;
+    case ND_LABEL:
+      printf("label %s\n", n->name);
+      dump_stmt(n->body, d + 1);
+      return;
+    case ND_GOTO:
+      printf("goto %s\n", n->name);
+      return;
     case ND_RETURN:
       printf("return\n");
       if (n->lhs)
