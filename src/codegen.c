@@ -251,6 +251,17 @@ static void resolve_bin(Node *n) {
   }
 }
 
+/* an lvalue whose type is const-qualified, standing in for "can't
+ * write here": a member of a const struct is const even though its
+ * own type isn't */
+static int lvalue_is_const(Node *n) {
+  if (n->type->is_const)
+    return 1;
+  if (n->kind == ND_MEMBER)
+    return lvalue_is_const(n->lhs);
+  return 0;
+}
+
 static void resolve_unary(Node *n) {
   resolve_expr(n->lhs);
   Type *ot = n->lhs->type;
@@ -271,6 +282,8 @@ static void resolve_unary(Node *n) {
       return;
     case OP_INC:
     case OP_DEC:
+      if (lvalue_is_const(n->lhs))
+        error("assignment to const-qualified object");
       if (ot->kind == TY_STRUCT || ot->kind == TY_UNION)
         error("invalid operands to binary operator");
       n->type = ot;
@@ -353,6 +366,8 @@ static void resolve_expr(Node *n) {
       resolve_expr(n->lhs);
       resolve_expr(n->rhs);
       Type *lt = n->lhs->type;
+      if (lvalue_is_const(n->lhs))
+        error("assignment to const-qualified object");
       if (n->op != '=' && (lt->kind == TY_STRUCT || lt->kind == TY_UNION))
         error("invalid compound assignment on a struct");
       if (lt->kind == TY_ARRAY || lt->kind == TY_FUNC)

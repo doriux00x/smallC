@@ -301,7 +301,7 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_INT || t->kind == TK_LONG || t->kind == TK_SIGNED ||
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
          t->kind == TK_DOUBLE || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
-         t->kind == TK_UNION ||
+         t->kind == TK_UNION || t->kind == TK_CONST ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -309,11 +309,12 @@ static int is_typespec_start(Token *t) {
 /* any run of type keywords: "unsigned long long" etc. */
 static Type *parse_typespec(void) {
   int is_unsigned = 0;
+  int is_const = 0;
   int longs = 0;
   Type *t = NULL;
 
   for (;;) {
-    if (consume(TK_SIGNED))    { is_unsigned = 0; continue; }
+    if (consume(TK_CONST))   { is_const = 1;      continue; }
     if (consume(TK_UNSIGNED))  { is_unsigned = 1; continue; }
     if (consume(TK_LONG))      { longs++;         continue; }
     if (consume(TK_VOID))      { t = type_new(TY_VOID);   continue; }
@@ -337,7 +338,9 @@ static Type *parse_typespec(void) {
       } else if (!has_enum_tag(tag)) {
         error_at(tok->loc, "unknown enum '%s'", tag);
       }
-      return type_new(TY_INT);
+      t = type_new(TY_INT);
+      t->is_const = is_const;
+      return t;
     }
     if (consume(TK_UNION)) {
       char *tag = NULL;
@@ -405,7 +408,9 @@ static Type *parse_typespec(void) {
           t->is_longlong = 1;
         if (is_unsigned)
           t->is_unsigned = 1;
-        return t;
+        if (is_const)
+          t->is_const = 1;
+        continue;   /* let trailing qualifiers ("myint const") apply */
       }
     }
     break;
@@ -416,6 +421,7 @@ static Type *parse_typespec(void) {
   if (longs >= 2)
     t->is_longlong = 1;
   t->is_unsigned = is_unsigned;
+  t->is_const = is_const;
   return t;
 }
 
@@ -1101,8 +1107,11 @@ static Type *suffix_loop(Type *t) {
  * the chain where the dummy sits */
 static Type *declarator(Type *base, char **name) {
   Type *t = base;
-  while (consume_punct("*"))
+  while (consume_punct("*")) {
     t = ptr_to(t);
+    if (consume(TK_CONST))
+      t->is_const = 1;   /* "char * const p": the pointer is const */
+  }
 
   if (consume_punct("(")) {
     Type dummy = {0};

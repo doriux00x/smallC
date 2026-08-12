@@ -23,6 +23,7 @@ struct Type {
   TypeKind kind;
   int is_unsigned;   /* signed/unsigned modifier */
   int is_longlong;   /* "long long" */
+  int is_const;      /* const qualifier: no writes allowed */
   int size;          /* bytes per target ABI */
   int align;         /* alignment, same ABI */
   int array_len;     /* TY_ARRAY only */

@@ -13,16 +13,17 @@ static void dump_type(Type *t) {
   static Type *dumping;   /* chain of types being printed, to break
                            * self-referential structs */
   const char *pre = t->is_unsigned ? "unsigned " : "";
+  const char *pre2 = t->is_const ? "const " : "";
   switch (t->kind) {
-    case TY_VOID:   printf("void"); return;
-    case TY_CHAR:   printf("%schar", pre); return;
-    case TY_SHORT:  printf("%sshort", pre); return;
-    case TY_INT:    printf("%sint", pre); return;
+    case TY_VOID:   printf("%svoid", pre2); return;
+    case TY_CHAR:   printf("%s%schar", pre2, pre); return;
+    case TY_SHORT:  printf("%s%sshort", pre2, pre); return;
+    case TY_INT:    printf("%s%sint", pre2, pre); return;
     case TY_LONG:
-      printf("%s%s", pre, t->is_longlong ? "long long" : "long");
+      printf("%s%s%s", pre2, pre, t->is_longlong ? "long long" : "long");
       return;
-    case TY_FLOAT:  printf("float"); return;
-    case TY_DOUBLE: printf("double"); return;
+    case TY_FLOAT:  printf("%sfloat", pre2); return;
+    case TY_DOUBLE: printf("%sdouble", pre2); return;
     case TY_PTR:    printf("ptr->"); dump_type(t->base); return;
     case TY_ARRAY:
       printf("array[%d]of ", t->array_len);
