@@ -116,10 +116,15 @@ Compile a single .c file to assembly:
 
     ./smallcc yourfile.c
 
-The assembly lands in `build/yourfile.s`. Assemble and link it with
-your system compiler:
+The assembly lands in `build/yourfile.s`. Several files compile in
+one run, each to its own `build/<base>.s` (basenames must not
+clash):
 
-    cc -no-pie build/yourfile.s -o build/yourfile
+    ./smallcc one.c two.c
+
+Assemble and link with your system compiler (one or many files):
+
+    cc -no-pie build/a.s build/b.s -o program
 
 Then run it:
 

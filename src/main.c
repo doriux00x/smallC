@@ -300,6 +300,7 @@ static void dump_stmt(Node *n, int d) {
 
 static void usage(void) {
   fprintf(stderr, "usage: smallcc [-a|-t] <file.c>\n");
+  fprintf(stderr, "       smallcc <file.c>...   each compiles to build/<base>.s\n");
   exit(1);
 }
 
@@ -315,6 +316,19 @@ static char *out_base(char *path) {
   return out;
 }
 
+/* one translation unit, end to end. every stage resets its own
+ * state (resolve rewinds the scope and label counter, codegen too),
+ * so several files in one run are exactly several separate runs */
+static void compile_file(char *path) {
+  g_src = read_file(path);
+  Token *toks = tokenize(g_src);
+  Node *root = parse(toks);
+  resolve(root);
+  char *outpath = out_base(path);
+  mkdir("build", 0755);   /* cc(1) would just fail, we're kinder */
+  codegen(root, outpath);
+}
+
 int main(int argc, char **argv) {
   enum { MODE_COMPILE, MODE_DUMP_AST, MODE_DUMP_TOKENS } mode = MODE_COMPILE;
   char *path;
@@ -325,10 +339,16 @@ int main(int argc, char **argv) {
   } else if (argc == 3 && strcmp(argv[1], "-t") == 0) {
     mode = MODE_DUMP_TOKENS;
     path = argv[2];
-  } else if (argc == 2) {
-    path = argv[1];
+  } else if (argc >= 2) {
+    path = NULL;
   } else {
     usage();
+  }
+
+  if (mode == MODE_COMPILE) {
+    for (int i = 1; i < argc; i++)
+      compile_file(argv[i]);
+    return 0;
   }
 
   g_src = read_file(path);
@@ -375,11 +395,4 @@ int main(int argc, char **argv) {
   printf("%d top-level item(s)\n", count);
     return 0;
   }
-
-  resolve(root);
-
-  char *outpath = out_base(path);
-  mkdir("build", 0755);   /* cc(1) would just fail, we're kinder */
-  codegen(root, outpath);
-  return 0;
 }

@@ -39,6 +39,10 @@ test: $(BIN)
 	  $(CC) $(CFLAGS) -o $(OBJDIR)/$$t $(OBJDIR)/$$t.s; \
 	  ./$(OBJDIR)/$$t; \
 	done
+	@echo "== multi-file =="; \
+	./$(BIN) tests/runmulti1.c tests/runmulti2.c; \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runmulti $(OBJDIR)/runmulti1.s $(OBJDIR)/runmulti2.s; \
+	./$(OBJDIR)/runmulti
 
 clean:
 	rm -rf $(OBJDIR) $(BIN)
