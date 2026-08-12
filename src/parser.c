@@ -300,7 +300,7 @@ static int is_typespec_start(Token *t) {
   return t->kind == TK_VOID || t->kind == TK_CHAR || t->kind == TK_SHORT ||
          t->kind == TK_INT || t->kind == TK_LONG || t->kind == TK_SIGNED ||
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
-         t->kind == TK_DOUBLE || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
+         t->kind == TK_DOUBLE || t->kind == TK_BOOL || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
          t->kind == TK_UNION || t->kind == TK_CONST ||
          t->kind == TK_STATIC || t->kind == TK_EXTERN ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
@@ -324,6 +324,14 @@ static Type *parse_typespec(void) {
     if (consume(TK_INT))       { t = type_new(TY_INT);    continue; }
     if (consume(TK_FLOAT))     { t = type_new(TY_FLOAT);  continue; }
     if (consume(TK_DOUBLE))    { t = type_new(TY_DOUBLE); continue; }
+    if (consume(TK_BOOL)) {
+      /* _Bool is a 1-byte object whose stored value is always 0 or 1;
+       * the codegen normalizes every write to it. it rides on TY_CHAR
+       * so storage size and layout come for free */
+      t = type_new(TY_CHAR);
+      t->is_bool = 1;
+      continue;
+    }
     if (consume(TK_ENUM)) {
       char *tag = NULL;
       if (at(TK_IDENT))

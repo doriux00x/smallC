@@ -24,6 +24,7 @@ struct Type {
   int is_unsigned;   /* signed/unsigned modifier */
   int is_longlong;   /* "long long" */
   int is_const;      /* const qualifier: no writes allowed */
+  int is_bool;       /* _Bool: 1-byte object, stored value is 0 or 1 */
   int size;          /* bytes per target ABI */
   int align;         /* alignment, same ABI */
   int array_len;     /* TY_ARRAY only */

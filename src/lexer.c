@@ -16,7 +16,7 @@ static Keyword keywords[] = {
   {"void", TK_VOID}, {"char", TK_CHAR}, {"short", TK_SHORT},
   {"int", TK_INT}, {"long", TK_LONG},
   {"signed", TK_SIGNED}, {"unsigned", TK_UNSIGNED},
-  {"float", TK_FLOAT}, {"double", TK_DOUBLE},
+  {"float", TK_FLOAT}, {"double", TK_DOUBLE}, {"_Bool", TK_BOOL},
   {"struct", TK_STRUCT}, {"union", TK_UNION}, {"enum", TK_ENUM},
   {"const", TK_CONST},
   {"typedef", TK_TYPEDEF}, {"extern", TK_EXTERN}, {"static", TK_STATIC},
@@ -239,7 +239,7 @@ Token *tokenize(char *p) {
 static char *kind_names[] = {
   "EOF", "IDENT", "NUM", "STR",
   "VOID", "CHAR", "SHORT", "INT", "LONG",
-  "SIGNED", "UNSIGNED", "FLOAT", "DOUBLE",
+  "SIGNED", "UNSIGNED", "FLOAT", "DOUBLE", "BOOL",
   "STRUCT", "UNION", "ENUM", "CONST",
   "TYPEDEF", "EXTERN", "STATIC",
   "IF", "ELSE", "WHILE", "FOR", "RETURN",

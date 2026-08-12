@@ -16,7 +16,12 @@ static void dump_type(Type *t) {
   const char *pre2 = t->is_const ? "const " : "";
   switch (t->kind) {
     case TY_VOID:   printf("%svoid", pre2); return;
-    case TY_CHAR:   printf("%s%schar", pre2, pre); return;
+    case TY_CHAR:
+      if (t->is_bool)
+        printf("%s_Bool", pre2);
+      else
+        printf("%s%schar", pre2, pre);
+      return;
     case TY_SHORT:  printf("%s%sshort", pre2, pre); return;
     case TY_INT:    printf("%s%sint", pre2, pre); return;
     case TY_LONG:

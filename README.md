@@ -14,6 +14,10 @@ linked with your system `cc`.
 The language subset grows all the time. As of now it handles:
 
 - Integers: char, short, int, long, with signed and unsigned
+- _Bool, with proper semantics: any nonzero value stored into one
+  becomes 1, so `_Bool b = 7;` gives you a 1. There is no
+  preprocessor, so the `bool`, `true` and `false` macros from
+  <stdbool.h> are not available; write `_Bool` and use 0/1.
 - Floating point: float and double, with SSE codegen
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
@@ -43,7 +47,7 @@ Known gaps, in no particular order:
 
 - No preprocessor. There is no `#include` and no `#define`. To call
   libc functions you declare your own prototypes, as the tests do.
-- No `_Bool`, no `volatile`, no `register`.
+- No `volatile`, no `register`.
 - No variadic functions, no VLA, no compound literals.
 - Only 64-bit x86 (System V ABI, Linux/ELF). No Windows, no ARM,
   no 32-bit.

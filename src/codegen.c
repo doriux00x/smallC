@@ -866,6 +866,16 @@ static void resolve_stmt(Node *n) {
           n->lhs = cast_of(n->lhs, cur_ret);
         else if (!is_real(cur_ret) && is_real(n->lhs->type))
           n->lhs = cast_of(n->lhs, cur_ret);
+        else if (cur_ret->is_bool && !n->lhs->type->is_bool) {
+          /* cast_of skips int->int, but _Bool is a real conversion:
+           * any nonzero value must become 1 in the return register */
+          Node *c = xmalloc(sizeof(Node));
+          c->kind = ND_CAST;
+          c->lhs = n->lhs;
+          c->targ = cur_ret;
+          c->type = cur_ret;
+          n->lhs = c;
+        }
       }
       return;
     case ND_BREAK:
@@ -1046,7 +1056,7 @@ static void load(Type *t) {
   switch (t->size) {
     case 1:
       fprintf(out, "  %s (%%rax), %%eax\n",
-              t->is_unsigned ? "movzbl" : "movsbl");
+              (t->is_unsigned || t->is_bool) ? "movzbl" : "movsbl");
       return;
     case 2:
       fprintf(out, "  %s (%%rax), %%eax\n",
@@ -1076,6 +1086,11 @@ static void store(Type *t) {
   }
   switch (t->size) {
     case 1:
+      if (t->is_bool) {
+        /* any nonzero value becomes 1 (C99 6.3.1.2) */
+        fprintf(out, "  test %%al, %%al\n");
+        fprintf(out, "  setne %%al\n");
+      }
       fprintf(out, "  mov %%al, (%%rdi)\n");
       return;
     case 2:
@@ -1557,8 +1572,14 @@ static void gen_expr(Node *n) {
         fprintf(out, "  cvtsi2ss %%rax, %%xmm0\n");
       else if (fr == TY_DOUBLE)
         fprintf(out, "  cvttsd2si %%xmm0, %%rax\n");
-      else
+      else if (is_real(n->targ))
         fprintf(out, "  cvtsi2sd %%rax, %%xmm0\n");
+      if (n->targ->is_bool) {
+        /* real sources hit cvtt*2si above, so the int result is in
+         * %rax; collapse it to 0/1 */
+        fprintf(out, "  test %%al, %%al\n");
+        fprintf(out, "  setne %%al\n");
+      }
       return;
     }
     case ND_UNARY:
@@ -2132,11 +2153,14 @@ static void gen_data(Node *n) {
         fprintf(out, "  .long 0x%x\n", bits);
       } else {
         CVal v = const_fold(it->expr);
+        int ival = v.is_float ? (int)v.fval : v.val;
+        if (it->ty->is_bool)
+          ival = ival != 0;
         fprintf(out, "  .%s %d\n",
                 it->ty->size == 1 ? "byte" :
                 it->ty->size == 2 ? "short" :
                 it->ty->size == 4 ? "long" : "quad",
-                v.is_float ? (int)v.fval : v.val);
+                ival);
       }
       off = it->offset + it->ty->size;
     }
@@ -2173,11 +2197,14 @@ static void gen_data(Node *n) {
     fprintf(out, "  .long 0x%x\n", bits);
     return;
   }
+  int ival = v.is_float ? (int)v.fval : v.val;
+  if (n->type->is_bool)
+    ival = ival != 0;
   fprintf(out, "  .%s %d\n",
           n->type->size == 1 ? "byte" :
           n->type->size == 2 ? "short" :
           n->type->size == 4 ? "long" : "quad",
-          v.is_float ? (int)v.fval : v.val);
+          ival);
 }
 
 static void gen_func(Node *n) {
