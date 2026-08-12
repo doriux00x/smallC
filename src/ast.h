@@ -116,6 +116,8 @@ struct Node {
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */
   int is_prefix;               /* ND_UNARY ++/--: prefix vs postfix */
+  int is_static;               /* ND_DECL / ND_FUNC: static storage */
+  int is_extern;               /* ND_DECL / ND_FUNC: extern class */
   Obj *var;                    /* resolved symbol, ND_VAR / ND_STR;
                                   ND_CALL: hidden struct return buffer;
                                   ND_RETURN: the function's "~ret" param */

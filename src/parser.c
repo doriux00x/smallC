@@ -302,6 +302,7 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_UNSIGNED || t->kind == TK_FLOAT ||
          t->kind == TK_DOUBLE || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
          t->kind == TK_UNION || t->kind == TK_CONST ||
+         t->kind == TK_STATIC || t->kind == TK_EXTERN ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -1215,7 +1216,21 @@ static void parse_typedef(void) {
 }
 
 static Node *parse_declaration(void) {
+  /* storage class prefixes: the flags live on the produced nodes;
+   * typedef with a storage class is rejected below */
+  int is_static = 0, is_extern = 0;
+  for (;;) {
+    if (consume(TK_STATIC))
+      is_static = 1;
+    else if (consume(TK_EXTERN))
+      is_extern = 1;
+    else
+      break;
+  }
+
   if (consume(TK_TYPEDEF)) {
+    if (is_static || is_extern)
+      error_at(tok->loc, "storage class on a typedef");
     parse_typedef();
     return NULL;
   }
@@ -1226,6 +1241,8 @@ static Node *parse_declaration(void) {
   for (;;) {
     Type *t;
     Node *n = parse_declarator(base, &t);
+    n->is_static = is_static;
+    n->is_extern = is_extern;
     if (!n->name && n->kind == ND_DECL) {
       /* a type-only declaration ("struct point {...};") carries
        * no storage, just a tag definition */

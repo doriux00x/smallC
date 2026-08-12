@@ -198,6 +198,10 @@ static void dump_stmt(Node *n, int d) {
       return;
     case ND_DECL:
       printf("decl %-14s %2d bytes : ", n->name, n->type->size);
+      if (n->is_static)
+        printf("static ");
+      else if (n->is_extern)
+        printf("extern ");
       dump_type(n->type);
       printf("\n");
       if (n->init)
@@ -262,6 +266,10 @@ static void dump_stmt(Node *n, int d) {
       return;
     case ND_FUNC:
       printf("func %s : ", n->name);
+      if (n->is_static)
+        printf("static ");
+      else if (n->is_extern)
+        printf("extern ");
       dump_type(n->type);
       printf("\n");
       if (n->body)

@@ -775,6 +775,8 @@ static void resolve_stmt(Node *n) {
       resolve_block(n);
       return;
     case ND_DECL: {
+      if (n->is_static || n->is_extern)
+        error("storage class on a local variable, unsupported");
       check_type_supported(n->type);
       if (n->type->kind == TY_VOID)
         error("variable '%s' declared void", n->name);
@@ -886,8 +888,13 @@ void resolve(Node *prog) {
       error("internal: unexpected top-level node");
       return;
     }
-    if (find_var(n->name))   /* first declaration wins */
+    Obj *prev = find_var(n->name);
+    if (prev) {
+      /* first declaration wins (proto + definition, extern then
+       * def); link the node anyway, codegen needs the symbol */
+      n->var = prev;
       continue;
+    }
     push_var(o);
     n->var = o;
   }
@@ -2018,11 +2025,17 @@ static CVal const_fold(Node *n) {
 }
 
 static void gen_data(Node *n) {
+  /* storage class: static loses the .globl export, extern emits no
+   * storage at all (the symbol is expected elsewhere at link time) */
+  if (n->is_extern)
+    return;
+  int exported = !n->is_static;
   if (n->inits) {
     /* brace initializer: one directive per leaf, .zero for the gaps
      * (struct members can have padding between them) and the tail */
     section(".data");
-    fprintf(out, "  .globl %s\n", n->name);
+    if (exported)
+      fprintf(out, "  .globl %s\n", n->name);
     fprintf(out, "%s:\n", n->name);
     int off = 0;
     for (int i = 0; i < n->init_n; i++) {
@@ -2061,14 +2074,16 @@ static void gen_data(Node *n) {
     /* the label must exist before the .quad references it */
     emit_string(n->init);
     section(".data");
-    fprintf(out, "  .globl %s\n", n->name);
+    if (exported)
+      fprintf(out, "  .globl %s\n", n->name);
     fprintf(out, "%s:\n", n->name);
     fprintf(out, "  .quad %s\n", n->init->var->name);
     return;
   }
   CVal v = const_fold(n->init);
   section(".data");
-  fprintf(out, "  .globl %s\n", n->name);
+  if (exported)
+    fprintf(out, "  .globl %s\n", n->name);
   fprintf(out, "%s:\n", n->name);
   if (n->type->kind == TY_DOUBLE) {
     double d = v.is_float ? v.fval : (double)v.val;
@@ -2093,7 +2108,8 @@ static void gen_data(Node *n) {
 
 static void gen_func(Node *n) {
   section(".text");
-  fprintf(out, "  .globl %s\n", n->name);
+  if (!n->is_static)
+    fprintf(out, "  .globl %s\n", n->name);
   fprintf(out, "%s:\n", n->name);
   fprintf(out, "  push %%rbp\n");
   fprintf(out, "  mov %%rsp, %%rbp\n");
@@ -2217,11 +2233,14 @@ void codegen(Node *prog, char *outpath) {
       if (n->body)
         gen_func(n);
     } else if (n->kind == ND_DECL) {
-      if (n->init)
+      if (n->is_extern) {
+        /* nothing to emit; the symbol lives in another unit */
+      } else if (n->init) {
         gen_data(n);
-      else if (n->type->kind != TY_ARRAY || type_size(n->type) > 0) {
+      } else if (n->type->kind != TY_ARRAY || type_size(n->type) > 0) {
         section(".bss");
-        fprintf(out, "  .globl %s\n", n->name);
+        if (!n->is_static)
+          fprintf(out, "  .globl %s\n", n->name);
         fprintf(out, "%s:\n", n->name);
         fprintf(out, "  .zero %d\n", type_size(n->type));
       }
