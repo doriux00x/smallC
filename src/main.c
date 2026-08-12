@@ -13,7 +13,9 @@ static void dump_type(Type *t) {
   static Type *dumping;   /* chain of types being printed, to break
                            * self-referential structs */
   const char *pre = t->is_unsigned ? "unsigned " : "";
-  const char *pre2 = t->is_const ? "const " : "";
+  const char *pre2 = t->is_const && t->is_volatile ? "const volatile " :
+                     t->is_const ? "const " :
+                     t->is_volatile ? "volatile " : "";
   switch (t->kind) {
     case TY_VOID:   printf("%svoid", pre2); return;
     case TY_CHAR:

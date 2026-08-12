@@ -24,6 +24,11 @@ The language subset grows all the time. As of now it handles:
 - Struct, union, and enum types
 - typedef
 - The const qualifier
+- The volatile qualifier, in all positions (`volatile int`,
+  `int volatile`, `volatile int *p`, `int *volatile p`). The
+  backend never elides, reorders, or caches memory accesses, so
+  volatile needs no special code generation; it is accepted and
+  stored on the type so `volatile` code compiles as written.
 - static and extern storage classes
 - switch / case / default, including case labels hidden inside
   blocks and branches, and constant expressions in case labels
@@ -47,8 +52,8 @@ Known gaps, in no particular order:
 
 - No preprocessor. There is no `#include` and no `#define`. To call
   libc functions you declare your own prototypes, as the tests do.
-- No `volatile`, no `register`.
-- No variadic functions, no VLA, no compound literals.
+- No `register`, no variadic functions, no VLA, no compound
+  literals.
 - Only 64-bit x86 (System V ABI, Linux/ELF). No Windows, no ARM,
   no 32-bit.
 - Global float/double initializers must be constant expressions,
