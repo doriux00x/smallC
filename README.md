@@ -1,0 +1,155 @@
+# smallC
+
+A small C compiler for x86-64 Linux, written in C. It compiles a useful
+subset of C to real x86-64 assembly and is meant to stay small: the whole
+binary is currently about 250 KB on disk.
+
+The compiler is one executable, `smallcc`. It does not use libc or LLVM
+or anything like that. It is a from-scratch compiler: lexer, parser, type
+checking, and x86-64 codegen. The generated assembly is assembled and
+linked with your system `cc`.
+
+## What works
+
+The language subset grows all the time. As of now it handles:
+
+- Integers: char, short, int, long, with signed and unsigned
+- Floating point: float and double, with SSE codegen
+- Pointers, arrays, and full declarator grammar (function pointers
+  included)
+- Struct, union, and enum types
+- typedef
+- The const qualifier
+- static and extern storage classes
+- switch / case / default, including case labels hidden inside
+  blocks and branches, and constant expressions in case labels
+- goto and statement labels, forward or backward, into and out of
+  blocks
+- Initializers: scalars, arrays, strings, structs, and brace
+  initializers with zero-filling
+- Struct and union values passed by value and returned by value
+- Function definitions, prototypes, and calls with the System V
+  calling convention
+- The usual operators: arithmetic, comparisons with automatic
+  promotion, logical, bitwise, casts, sizeof, assignment operators,
+  ++/--, ternary, member access `.` and `->`, indexing
+
+Nothing in the compiler is generated or bootstrapped; it is
+self-written C compiled by your system compiler.
+
+## What does not work
+
+Known gaps, in no particular order:
+
+- No preprocessor. There is no `#include` and no `#define`. To call
+  libc functions you declare your own prototypes, as the tests do.
+- No `_Bool`, no `volatile`, no `register`.
+- No variadic functions, no VLA, no compound literals.
+- Only 64-bit x86 (System V ABI, Linux/ELF). No Windows, no ARM,
+  no 32-bit.
+- Global float/double initializers must be constant expressions,
+  same as C requires.
+
+If something is missing that you need, the parser is small and the
+features above show how each piece fits together, so adding one is
+usually a day's work. Read the tests first.
+
+## Building
+
+You need a C compiler and make(1). Any of gcc or clang works. There
+are no third-party dependencies, no configure step, no cmake, no
+installed headers beyond the C standard library.
+
+Plain build:
+
+    make
+
+This produces `smallcc` in the repo root and object files in `build/`.
+
+Package installs by distro, if you do not already have a toolchain:
+
+Gentoo:
+
+    emerge --ask sys-devel/gcc sys-devel/make
+
+Arch and derivatives (Artix, EndeavourOS, etc.):
+
+    pacman -S base-devel
+
+Debian, Ubuntu, Mint, and other apt-based distros:
+
+    apt install build-essential
+
+Fedora, RHEL, CentOS Stream, Rocky, AlmaLinux:
+
+    dnf groupinstall "Development Tools"
+
+openSUSE (Tumbleweed and Leap):
+
+    zypper install -t pattern devel_basis
+
+Alpine and other musl distros:
+
+    apk add build-base
+
+From there the build is always the same two commands:
+
+    make
+    make test
+
+## Using it
+
+Compile a single .c file to assembly:
+
+    ./smallcc yourfile.c
+
+The assembly lands in `build/yourfile.s`. Assemble and link it with
+your system compiler:
+
+    cc -no-pie build/yourfile.s -o build/yourfile
+
+Then run it:
+
+    ./build/yourfile
+
+Two debug flags, mostly useful while developing the compiler itself:
+
+    ./smallcc -a tests/switch.c   # dump the AST
+    ./smallcc -t tests/lexer.c    # dump the token stream
+
+## Tests
+
+`make test` runs the whole suite:
+
+- Dump tests feed the parser and print the AST or tokens; they only
+  exercise the front end.
+- Run tests are real programs. The compiler compiles them to
+  assembly, your system cc assembles and links the result, and the
+  program runs and must exit with status 0.
+
+The run tests double as feature demos. `tests/rungoto.c` covers the
+goto features, `tests/runstruct.c` the struct and union handling,
+`tests/runfloat.c` the floating point, and so on.
+
+`make size` prints the binary size; the informal budget is to keep
+the whole compiler under 2 MB.
+
+## Layout
+
+    src/main.c      driver, flag handling, AST dump
+    src/lexer.c     tokenizer
+    src/parser.c    parser, type checker, initializer handling
+    src/ast.c       AST node and type constructors
+    src/codegen.c   x86-64 code generation
+    src/util.c      allocators, error reporting
+    tests/          parser dumps and runnable programs
+
+The histories are in git. Each commit message names the feature it
+adds, and the test for it lands in the same commit.
+
+## Writing tests
+
+A run test is a C file with a `main` that returns 0 on success (the
+exit code is the verdict). Add it to the `test:` target in the
+Makefile run loop; the compiler picks its name up via `tests/$t.c`.
+There is no test framework, they are all just programs.
