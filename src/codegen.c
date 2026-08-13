@@ -69,6 +69,7 @@ struct CVal {
   double fval;
 };
 static CVal const_fold(Node *n);
+static int is_const_expr(Node *n);
 
 /* ------------------------------------------------------------------ */
 /* symbol tables and type inference (resolve)                          */
@@ -605,6 +606,36 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
         }
         return NULL;
       }
+      if (es->kind == ND_DESIG) {
+        /* a designator jumps the sequence to its target slot; the
+         * slots before it stay zero */
+        if (!es->lhs)
+          error("member designator on an array");
+        if (!is_const_expr(es->lhs))
+          error("array designator is not a constant expression");
+        CVal cv = const_fold(es->lhs);
+        if (cv.is_float)
+          error("array designator is not an integer constant expression");
+        int idx = cv.val;
+        if (idx < 0 || idx >= ty->array_len)
+          error("array designator [%d] out of range for [%d]", idx,
+                ty->array_len);
+        if (idx > i) {
+          for (; i < idx; i++) {
+            if (is_agg(ty->base))
+              init_fill_members(ty->base, off + i * sz, NULL);
+            else
+              init_add(ty->base, off + i * sz, NULL);
+          }
+        } else if (idx < i) {
+          /* a backward designator re-fills a past slot and restarts
+           * the sequence at idx + 1 (the for-increment below) */
+          i = idx;
+        }
+        init_fill(ty->base, off + idx * sz, es->then);
+        es = es->next;
+        continue;
+      }
       es = init_fill(ty->base, off + i * sz, es);
     }
     return es;
@@ -622,7 +653,45 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
       }
       return NULL;
     }
+    if (es->kind == ND_DESIG) {
+      /* a designator jumps the sequence to its target member; the
+       * members before it stay zero */
+      if (es->lhs)
+        error("array designator on a struct or union");
+      Member *dm = find_member(ty, es->name);
+      if (!dm)
+        error("no member named '%s'", es->name);
+      Member *p = m;
+      for (; p && p != dm; p = p->next)
+        ;
+      if (!p) {
+        /* the target member was already filled: override it in place */
+        init_fill(dm->type, off + dm->offset, es->then);
+        es = es->next;
+        continue;
+      }
+      for (; m != dm; m = m->next) {
+        if (is_agg(m->type))
+          init_fill_members(m->type, off + m->offset, NULL);
+        else
+          init_add(m->type, off + m->offset, NULL);
+      }
+      init_fill(dm->type, off + dm->offset, es->then);
+      es = es->next;
+      continue;
+    }
     es = init_fill(m->type, off + m->offset, es);
+  }
+  /* a designator left over after the members ran out targets an
+   * already-filled member: an out-of-order list re-fills it */
+  while (es && es->kind == ND_DESIG) {
+    if (es->lhs)
+      error("array designator on a struct or union");
+    Member *dm = find_member(ty, es->name);
+    if (!dm)
+      error("no member named '%s'", es->name);
+    init_fill(dm->type, off + dm->offset, es->then);
+    es = es->next;
   }
   return es;
 }
@@ -631,6 +700,56 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
  * braced element covers exactly one slot (its list feeds the slot's
  * own members), an unbraced scalar auto-braces into an aggregate slot */
 static Node *init_fill(Type *ty, int off, Node *es) {
+  if (es && es->kind == ND_DESIG) {
+    /* a designator fills exactly the slot it names inside ty and
+     * consumes one list element; a chain (.a.b[2]) walks down. each
+     * step descends into an aggregate, so its other parts stay zero */
+    Node *d = es;
+    for (;;) {
+      if (d->lhs) {
+        if (ty->kind != TY_ARRAY)
+          error("array designator on a non-array");
+        if (!is_const_expr(d->lhs))
+          error("array designator is not a constant expression");
+        CVal cv = const_fold(d->lhs);
+        if (cv.is_float)
+          error("array designator is not an integer constant expression");
+        int idx = cv.val;
+        if (!init_counting && (idx < 0 || idx >= ty->array_len))
+          error("array designator [%d] out of range for [%d]", idx,
+                ty->array_len);
+        for (int j = 0; j < ty->array_len; j++) {
+          if (j == idx)
+            continue;
+          if (is_agg(ty->base))
+            init_fill_members(ty->base, off + j * type_size(ty->base), NULL);
+          else
+            init_add(ty->base, off + j * type_size(ty->base), NULL);
+        }
+        off += idx * type_size(ty->base);
+        ty = ty->base;
+      } else {
+        Member *m = find_member(ty, d->name);
+        if (!m)
+          error("no member named '%s'", d->name);
+        for (Member *o = ty->members; o; o = o->next) {
+          if (o == m)
+            continue;
+          if (is_agg(o->type))
+            init_fill_members(o->type, off + o->offset, NULL);
+          else
+            init_add(o->type, off + o->offset, NULL);
+        }
+        off += m->offset;
+        ty = m->type;
+      }
+      if (!d->then || d->then->kind != ND_DESIG)
+        break;
+      d = d->then;
+    }
+    init_fill(ty, off, d->then);
+    return es->next;
+  }
   if (es && es->kind == ND_INIT_LIST) {
     if (!is_agg(ty)) {
       /* braced scalar, like int x = {5} */
@@ -661,15 +780,33 @@ static Node *init_fill(Type *ty, int off, Node *es) {
   return es->next;
 }
 
-/* how many array elements the list es fills for the flexible array
- * ty; runs in counting mode so no leaves are produced */
+/* how many elements the flexible array ty needs, i.e. one past the
+ * last slot any element (or array designator) reaches; runs in
+ * counting mode so no leaves are produced */
 static int init_len(Type *ty, Node *es) {
   init_counting = 1;
-  int n = 0;
+  int n = 0;    /* largest position reached, i.e. the length */
+  int pos = 0;  /* the sequential fill position */
   Node *e = es;
   while (e) {
-    n++;
-    e = init_fill(ty->base, 0, e);
+    if (e->kind == ND_DESIG && e->lhs) {
+      /* an array designator pins the position at idx+1 */
+      if (!is_const_expr(e->lhs))
+        error("array designator is not a constant expression");
+      CVal cv = const_fold(e->lhs);
+      if (cv.is_float)
+        error("array designator is not an integer constant expression");
+      if (cv.val < 0)
+        error("array designator out of range");
+      pos = cv.val + 1;
+      init_fill(ty->base, 0, e->then);
+      e = e->next;
+    } else {
+      pos++;
+      e = init_fill(ty->base, 0, e);
+    }
+    if (pos > n)
+      n = pos;
   }
   init_counting = 0;
   return n;
@@ -1741,7 +1878,7 @@ static void gen_expr(Node *n) {
            * (and *fp on a function pointer is the function) */
           gen_expr(n->lhs);
           if (n->type->kind != TY_FUNC && n->type->kind != TY_STRUCT &&
-            n->type->kind != TY_UNION)
+            n->type->kind != TY_UNION && n->type->kind != TY_ARRAY)
             load(n->type);
           return;
         case '+':
@@ -2411,9 +2548,33 @@ static void gen_data(Node *n) {
     if (exported)
       fprintf(out, "  .globl %s\n", sym);
     fprintf(out, "%s:\n", sym);
-    int off = 0;
+    /* out-of-order designators can leave several leaves on one
+     * offset; each offset keeps its last (winning) leaf, and the
+     * leaves emit in offset order */
+    int merges = 0;
+    int *offs = xmalloc(sizeof(int) * n->init_n);
+    int *last = xmalloc(sizeof(int) * n->init_n);
     for (int i = 0; i < n->init_n; i++) {
-      Init *it = &n->inits[i];
+      int j;
+      for (j = 0; j < merges; j++)
+        if (offs[j] == n->inits[i].offset)
+          break;
+      if (j == merges) {
+        offs[merges] = n->inits[i].offset;
+        last[merges] = i;
+        merges++;
+      } else {
+        last[j] = i;
+      }
+    }
+    int off = 0;
+    for (int k = 0; k < merges; k++) {
+      int best = -1;
+      for (int j = 0; j < merges; j++)
+        if (offs[j] >= 0 && (best < 0 || offs[j] < offs[best]))
+          best = j;
+      Init *it = &n->inits[last[best]];
+      offs[best] = -1;
       /* emit_string hops to .rodata and back to .text; the fields
        * themselves must stay in .data */
       section(".data");

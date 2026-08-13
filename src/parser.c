@@ -1411,6 +1411,42 @@ static Type *declarator(Type *base, char **name) {
 /* a brace initializer: { e1, e2, ... }, nested lists for aggregates.
  * empty lists ({}) zero-fill the object, and a trailing comma is
  * legal, both per C's grammar */
+/* one element of a brace initializer: a plain initializer, or a
+ * designator list applied to one. a designator is .ident or
+ * [const-expr]; the list ends at '=', e.g. .a.b[2] = v. the first
+ * designator is the outermost, so later ones nest under it */
+static Node *parse_init_elem(void) {
+  Node *root = NULL;   /* first designator, outermost */
+  Node **tail = &root;
+  for (;;) {
+    if (consume_punct(".")) {
+      Node *d = node_new(ND_DESIG);
+      d->name = expect_ident("designator")->name;
+      d->lhs = NULL;
+      *tail = d;
+      tail = &d->then;
+      continue;
+    }
+    if (is_punct("[")) {
+      tok = tok->next;
+      Node *d = node_new(ND_DESIG);
+      d->name = NULL;
+      d->lhs = parse_expr();
+      expect_punct("]");
+      *tail = d;
+      tail = &d->then;
+      continue;
+    }
+    break;
+  }
+  if (root) {
+    expect_punct("=");
+    *tail = parse_initializer();
+    return root;
+  }
+  return parse_initializer();
+}
+
 static Node *parse_initializer(void) {
   if (!is_punct("{"))
     return parse_assign();
@@ -1423,7 +1459,7 @@ static Node *parse_initializer(void) {
   for (;;) {
     if (consume_punct("}"))
       break;
-    Node *e = parse_initializer();
+    Node *e = parse_init_elem();
     *link = e;
     link = &e->next;
     if (consume_punct("}"))

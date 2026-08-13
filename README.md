@@ -48,6 +48,9 @@ The language subset grows all the time. As of now it handles:
   blocks
 - Initializers: scalars, arrays, strings, structs, and brace
   initializers with zero-filling
+- C99 designated initializers: `.member = v`, `[idx] = v`, chains
+  like `.a.b[2] = v`, out-of-order members, and flexible arrays
+  sized by the largest designator index
 - C99 compound literals: `(int[]){1, 2, 3}` and
   `(struct point){1, 2}` create an anonymous initialized object at
   block scope, a fresh one on every evaluation, usable as an lvalue
