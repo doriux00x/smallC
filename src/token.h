@@ -24,6 +24,7 @@ struct Token {
   TokenKind kind;
   Token *next;
   int val;       /* numeric value when TK_NUM and not is_float */
+  int is_unsigned; /* TK_NUM integer: raw value was > INT_MAX */
   int is_float;  /* TK_NUM: floating literal */
   int is_f;      /* TK_NUM: the f/F suffix, a float (not double) literal */
   double fval;   /* TK_NUM float value */

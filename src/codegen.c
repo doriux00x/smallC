@@ -47,11 +47,13 @@ static Scope *scope = &base_scope;
 static int labeln;
 static int cur_offset;
 static char *cur_section = "";
+static int cur_va_off;      /* the current function's ~va save area */
 
 static FILE *out;
 static int brk_labels[64], cont_labels[64];
 static int brk_n, cont_n;
 static int ret_label;
+static Type *cur_fn_ret;   /* return type of the function being emitted */
 
 /* function-local statics collected during resolve; codegen emits them
  * like globals after the text section */
@@ -182,7 +184,10 @@ static Node *cast_of(Node *n, Type *to) {
 static void resolve_num(Node *n) {
   if (n->is_float)
     n->type = n->is_f ? type_new(TY_FLOAT) : type_new(TY_DOUBLE);
-  else
+  else if (n->is_unsigned) {
+    n->type = type_new(TY_INT);
+    n->type->is_unsigned = 1;
+  } else
     n->type = type_new(TY_INT);
 }
 
@@ -462,6 +467,15 @@ static void resolve_expr(Node *n) {
       else
         check_type_supported(n->targ);
       n->type = type_new(TY_INT);
+      return;
+    case ND_VA_START:
+      resolve_expr(n->lhs);
+      n->type = type_new(TY_INT);
+      n->va[3] = cur_va_off;
+      return;
+    case ND_VA_ARG:
+      resolve_expr(n->lhs);
+      n->type = n->targ;
       return;
     case ND_INIT_LIST:
       error("initializer list not allowed in an expression");
@@ -994,6 +1008,7 @@ void resolve(Node *prog) {
     cur_offset = 0;
     cur_ret = ft->ret;
     cur_sret = NULL;
+    cur_va_off = 0;
     for (Node *p = ft->params; p; p = p->next) {
       Obj *po = new_obj(p->name, p->type);
       po->is_local = 1;
@@ -1008,6 +1023,19 @@ void resolve(Node *prog) {
       po->offset = cur_offset;
       push_var(po);
       p->var = po;
+    }
+    if (ft->is_variadic) {
+      /* the register save area: a 176-byte local (6 GP regs, then
+       * 8 xmm regs in 16-byte slots) that the prologue fills from
+       * the incoming argument registers; va_start points its
+       * reg_save_area at it */
+      Obj *vo = new_obj("~va", array_of(type_new(TY_CHAR), 176));
+      vo->is_local = 1;
+      cur_offset -= roundup(vo->type->size, 8);
+      vo->offset = cur_offset;
+      push_var(vo);
+      n->val = vo->offset;
+      cur_va_off = vo->offset;
     }
     resolve_block(n->body);
     leave_scope();
@@ -1498,6 +1526,12 @@ static void gen_expr(Node *n) {
           emit_constf((float)n->fval);
         else
           emit_const(n->fval);
+      } else if (n->type->is_unsigned) {
+        /* val is stored truncated to 32 bits; an unsigned constant
+         * must ride the register zero-extended, so 0xdeadbeef is
+         * 0xdeadbeef and not sign-extended to 0xffffffffdeadbeef.
+         * the 32-bit destination makes the mov a zero-extend */
+        fprintf(out, "  mov $%u, %%eax\n", (unsigned)n->val);
       } else {
         fprintf(out, "  mov $%d, %%rax\n", n->val);
       }
@@ -1817,6 +1851,109 @@ static void gen_expr(Node *n) {
       else
         fprintf(out, "  mov $%d, %%rax\n", type_size(n->targ));
       return;
+    case ND_VA_START: {
+      /* ap gets the register counts va_start computed at parse time,
+       * plus the addresses of the first stack vararg (16(%rbp)..)
+       * and of this function's ~va register save area */
+      gen_expr(n->lhs);
+      fprintf(out, "  mov $%d, (%%rax)\n", n->va[0]);
+      fprintf(out, "  mov $%d, 4(%%rax)\n", n->va[1]);
+      fprintf(out, "  lea %d(%%rbp), %%rdx\n", n->va[2]);
+      fprintf(out, "  mov %%rdx, 8(%%rax)\n");
+      fprintf(out, "  lea %d(%%rbp), %%rdx\n", n->va[3]);
+      fprintf(out, "  mov %%rdx, 16(%%rax)\n");
+      return;
+    }
+    case ND_VA_ARG: {
+      /* the fetch: once ap's gp/fp offsets and the two areas are up,
+       * register-class args come out of reg_save_area[offset], the
+       * rest follow the overflow area. only the class that was used
+       * advances, and the advancement is written straight back into
+       * the va_list object in %rcx */
+      gen_expr(n->lhs);
+      fprintf(out, "  mov %%rax, %%rcx\n");
+      Type *tt = n->targ;
+      int s = type_size(tt);
+      int lbl1 = labeln++;
+      int lbl2 = labeln++;
+      if (tt->kind == TY_FLOAT || tt->kind == TY_DOUBLE) {
+        fprintf(out, "  mov 4(%%rcx), %%eax\n");
+        fprintf(out, "  cmp $176, %%eax\n");
+        fprintf(out, "  jge .Lva%d\n", lbl1);
+        fprintf(out, "  mov 16(%%rcx), %%rdi\n");
+        fprintf(out, "  add %%rax, %%rdi\n");
+        if (tt->kind == TY_FLOAT)
+          fprintf(out, "  movss (%%rdi), %%xmm0\n");
+        else
+          fprintf(out, "  movsd (%%rdi), %%xmm0\n");
+        fprintf(out, "  addl $16, 4(%%rcx)\n");
+        fprintf(out, "  jmp .Lva%d\n", lbl2);
+        fprintf(out, ".Lva%d:\n", lbl1);
+        fprintf(out, "  mov 8(%%rcx), %%rdi\n");
+        if (tt->kind == TY_FLOAT)
+          fprintf(out, "  movss (%%rdi), %%xmm0\n");
+        else
+          fprintf(out, "  movsd (%%rdi), %%xmm0\n");
+        fprintf(out, "  addl $8, 8(%%rcx)\n");
+      } else {
+        fprintf(out, "  mov (%%rcx), %%eax\n");
+        fprintf(out, "  cmp $48, %%eax\n");
+        fprintf(out, "  jge .Lva%d\n", lbl1);
+        fprintf(out, "  mov 16(%%rcx), %%rdi\n");
+        fprintf(out, "  add %%rax, %%rdi\n");
+        switch (s) {
+          case 1:
+            if (tt->is_unsigned)
+              fprintf(out, "  movzbq (%%rdi), %%rax\n");
+            else
+              fprintf(out, "  movsbq (%%rdi), %%rax\n");
+            break;
+          case 2:
+            if (tt->is_unsigned)
+              fprintf(out, "  movzwq (%%rdi), %%rax\n");
+            else
+              fprintf(out, "  movswq (%%rdi), %%rax\n");
+            break;
+          case 4:
+            if (tt->is_unsigned || tt->kind == TY_PTR)
+              fprintf(out, "  movl (%%rdi), %%eax\n");
+            else
+              fprintf(out, "  movslq (%%rdi), %%rax\n");
+            break;
+          default:
+            fprintf(out, "  mov (%%rdi), %%rax\n");
+        }
+        fprintf(out, "  addl $8, (%%rcx)\n");
+        fprintf(out, "  jmp .Lva%d\n", lbl2);
+        fprintf(out, ".Lva%d:\n", lbl1);
+        fprintf(out, "  mov 8(%%rcx), %%rdi\n");
+        switch (s) {
+          case 1:
+            if (tt->is_unsigned)
+              fprintf(out, "  movzbq (%%rdi), %%rax\n");
+            else
+              fprintf(out, "  movsbq (%%rdi), %%rax\n");
+            break;
+          case 2:
+            if (tt->is_unsigned)
+              fprintf(out, "  movzwq (%%rdi), %%rax\n");
+            else
+              fprintf(out, "  movswq (%%rdi), %%rax\n");
+            break;
+          case 4:
+            if (tt->is_unsigned || tt->kind == TY_PTR)
+              fprintf(out, "  movl (%%rdi), %%eax\n");
+            else
+              fprintf(out, "  movslq (%%rdi), %%rax\n");
+            break;
+          default:
+            fprintf(out, "  mov (%%rdi), %%rax\n");
+        }
+        fprintf(out, "  addl $8, 8(%%rcx)\n");
+      }
+      fprintf(out, ".Lva%d:\n", lbl2);
+      return;
+    }
     default:
       error("internal: bad expression node %d", n->kind);
   }
@@ -2051,6 +2188,16 @@ static void gen_stmt(Node *n) {
           fprintf(out, "  mov %d(%%rbp), %%rdi\n", n->var->offset);
           fprintf(out, "  mov $%d, %%rdx\n", n->lhs->type->size);
           fprintf(out, "  call memcpy\n");
+        } else if (cur_fn_ret->kind == TY_CHAR || cur_fn_ret->kind == TY_SHORT ||
+             cur_fn_ret->kind == TY_INT) {
+          /* a char/32-bit return is often produced by a 32-bit op in
+           * %eax, leaving garbage in the upper 32 bits of %rax; rebuild
+           * the full-width int so callers comparing 64-bit see -7, not
+           * 249, and 0xdeadbeef stays 0xdeadbeef */
+          if (cur_fn_ret->is_unsigned)
+            fprintf(out, "  movl %%eax, %%eax\n");
+          else
+            fprintf(out, "  movslq %%eax, %%rax\n");
         }
       }
       fprintf(out, "  jmp .L.ret%d\n", ret_label);
@@ -2320,6 +2467,7 @@ static void gen_data(Node *n) {
 }
 
 static void gen_func(Node *n) {
+  cur_fn_ret = n->type->ret;
   section(".text");
   if (!n->is_static)
     fprintf(out, "  .globl %s\n", n->name);
@@ -2330,6 +2478,18 @@ static void gen_func(Node *n) {
   int frame = n->var->frame;
   if (frame > 0)
     fprintf(out, "  sub $%d, %%rsp\n", frame);
+
+  /* variadic prologue: park the incoming argument registers in the
+   * 176-byte ~va save area before the param spill below runs, which
+   * may call memcpy and clobber every one of them. ints at 8-byte
+   * slots from the base, the xmm regs in 16-byte slots after them */
+  if (n->type->is_variadic) {
+    static char *vargreg[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+    for (int i = 0; i < 6; i++)
+      fprintf(out, "  mov %s, %d(%%rbp)\n", vargreg[i], n->val + i * 8);
+    for (int i = 0; i < 8; i++)
+      fprintf(out, "  movsd %%xmm%d, %d(%%rbp)\n", i, n->val + 48 + i * 16);
+  }
 
   /* spill the SysV registers into the param slots. ints arrive in
    * rdi..r9, doubles in xmm0..7, each class counted independently;

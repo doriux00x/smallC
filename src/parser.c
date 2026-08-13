@@ -5,6 +5,7 @@
 #include "libc.h"
 
 static Token *tok;
+static Type *cur_fn;   /* the function whose body is being parsed */
 
 /* loops we're nested in, so break/continue can be validated */
 static int nloop;
@@ -132,6 +133,35 @@ static void register_typedef(char *name, Type *type) {
   t->type = type;
   t->next = typedefs;
   typedefs = t;
+}
+
+/* the stdarg machinery's va_list: a builtin typedef for a struct
+ * whose layout matches the SysV ABI (two 4-byte offsets, then the
+ * overflow and register save areas), so a va_list built here can be
+ * handed to libc's vprintf */
+static Type *builtin_va_list_type(void) {
+  static Type *cached;
+  if (cached)
+    return cached;
+
+  Type *st = struct_type();
+  char *names[4] = { "gp_offset", "fp_offset",
+                     "overflow_arg_area", "reg_save_area" };
+  Type *tys[4] = { type_new(TY_INT), type_new(TY_INT),
+                   ptr_to(type_new(TY_VOID)), ptr_to(type_new(TY_VOID)) };
+
+  Member **link = &st->members;
+  for (int i = 0; i < 4; i++) {
+    Member *m = xmalloc(sizeof(Member));
+    m->next = NULL;
+    m->name = names[i];
+    m->type = tys[i];
+    *link = m;
+    link = &m->next;
+  }
+  layout_struct(st);
+  cached = st;
+  return st;
 }
 
 /**
@@ -317,6 +347,7 @@ static Type *parse_typespec(void) {
     if (consume(TK_CONST))     { is_const = 1;    continue; }
     if (consume(TK_VOLATILE))  { is_volatile = 1; continue; }
     if (consume(TK_UNSIGNED))  { is_unsigned = 1; continue; }
+    if (consume(TK_SIGNED))    { continue; }
     if (consume(TK_LONG))      { longs++;         continue; }
     if (consume(TK_VOID))      { t = type_new(TY_VOID);   continue; }
     if (consume(TK_CHAR))      { t = type_new(TY_CHAR);   continue; }
@@ -805,6 +836,117 @@ static Node *parse_postfix(void) {
   }
 }
 
+/* -------- stdarg builtins -------- */
+
+/* sysV bookkeeping: how many of each register class the named
+ * (fixed) parameters consume, and how many spill to the stack. the
+ * "~ret" hidden param of a struct-returning variadic function counts
+ * as one more integer-class arg, mirroring the resolve pass */
+static void va_param_counts(Type *ft, int *gp, int *sse, int *stk) {
+  *gp = 0;
+  *sse = 0;
+  *stk = 0;
+  for (Node *p = ft->params; p; p = p->next) {
+    if (!p->name)
+      continue;
+    if (p->type->kind == TY_FLOAT || p->type->kind == TY_DOUBLE) {
+      (*sse)++;
+      if (*sse > 8)
+        (*stk)++;
+    } else {
+      (*gp)++;
+      if (*gp > 6)
+        (*stk)++;
+    }
+  }
+  if (ft->ret->kind == TY_STRUCT || ft->ret->kind == TY_UNION) {
+    (*gp)++;
+    if (*gp > 6)
+      (*stk)++;
+  }
+}
+
+static Node *parse_va_start(void) {
+  if (!cur_fn || !cur_fn->is_variadic)
+    error_at(tok->loc, "va_start outside a variadic function");
+  expect_punct("(");
+  Node *ap = parse_assign();
+  expect_punct(",");
+  Token *last = expect(TK_IDENT, "last named parameter after va_start");
+  expect_punct(")");
+
+  int gp, sse, stk;
+  va_param_counts(cur_fn, &gp, &sse, &stk);
+  int found = 0;
+  for (Node *p = cur_fn->params; p; p = p->next)
+    if (p->name && strcmp(p->name, last->name) == 0) {
+      found = 1;
+      break;
+    }
+  if (!found)
+    error_at(last->loc, "unknown parameter '%s' in va_start", last->name);
+
+  Node *n = node_new(ND_VA_START);
+  n->lhs = ap;
+  n->va[0] = 8 * gp;
+  n->va[1] = (gp == 6) ? 48 + 16 * sse : 48;
+  n->va[2] = 16 + 8 * stk;   /* first stack vararg, rbp-relative */
+  n->va[3] = 0;              /* the register save area, set at resolve */
+  return n;
+}
+
+static Node *parse_va_arg(void) {
+  expect_punct("(");
+  Node *ap = parse_assign();
+  expect_punct(",");
+  char *dummy;
+  Type *ty = declarator(parse_typespec(), &dummy);
+  expect_punct(")");
+
+  if (ty->kind == TY_VOID || ty->kind == TY_STRUCT || ty->kind == TY_UNION)
+    error_at(tok->loc, "unsupported va_arg type");
+  Node *n = node_new(ND_VA_ARG);
+  n->lhs = ap;
+  n->targ = ty;
+  return n;
+}
+
+static Node *parse_va_end(void) {
+  expect_punct("(");
+  parse_assign();
+  expect_punct(")");
+  Node *n = node_new(ND_NUM);
+  n->val = 0;
+  return n;
+}
+
+/* va_copy(dst, src): a whole-struct copy of the two va_lists */
+static Node *parse_va_copy(void) {
+  expect_punct("(");
+  Node *dst = parse_assign();
+  expect_punct(",");
+  Node *src = parse_assign();
+  expect_punct(")");
+
+  Node *ad = node_new(ND_UNARY);
+  ad->op = '&';
+  ad->lhs = dst;
+  Node *dd = node_new(ND_UNARY);
+  dd->op = '*';
+  dd->lhs = ad;
+  Node *as = node_new(ND_UNARY);
+  as->op = '&';
+  as->lhs = src;
+  Node *ds = node_new(ND_UNARY);
+  ds->op = '*';
+  ds->lhs = as;
+  Node *n = node_new(ND_ASSIGN);
+  n->op = '=';
+  n->lhs = dd;
+  n->rhs = ds;
+  return n;
+}
+
 static Node *parse_primary(void) {
   if (at(TK_SIZEOF)) {
     tok = tok->next;
@@ -849,6 +991,7 @@ static Node *parse_primary(void) {
       n->fval = t->fval;
     } else {
       n->val = t->val;
+      n->is_unsigned = t->is_unsigned;
     }
     return n;
   }
@@ -872,6 +1015,15 @@ static Node *parse_primary(void) {
   }
 
   if ((t = consume(TK_IDENT))) {
+    /* stdarg builtins: va_start / va_arg / va_end / va_copy */
+    if (strcmp(t->name, "va_start") == 0)
+      return parse_va_start();
+    if (strcmp(t->name, "va_arg") == 0)
+      return parse_va_arg();
+    if (strcmp(t->name, "va_end") == 0)
+      return parse_va_end();
+    if (strcmp(t->name, "va_copy") == 0)
+      return parse_va_copy();
     EnumConst *ec = find_enum_const(t->name);
     if (ec) {
       /* an enumerator is a compile-time int; it resolves here, so it
@@ -1115,6 +1267,15 @@ static Type *parse_params(Type *ret) {
       expect_punct(")");
     } else {
       for (;;) {
+        if (tok->kind == TK_PUNCT && tok->len == 3 &&
+            memcmp(tok->loc, "...", 3) == 0) {
+          /* "..." marks the function variadic; the extra args ride
+           * the same registers as fixed params on x86-64 SysV */
+          ft->is_variadic = 1;
+          tok = tok->next;
+          expect_punct(")");
+          break;
+        }
         consume(TK_REGISTER);   /* hint, ignored like the locals */
         Type *pt = parse_typespec();
         char *pname = NULL;
@@ -1128,15 +1289,6 @@ static Type *parse_params(Type *ret) {
 
         if (consume_punct(")"))
           break;
-        if (tok->kind == TK_PUNCT && tok->len == 3 &&
-            memcmp(tok->loc, "...", 3) == 0) {
-          /* "..." variadic: libc calls are declared with `...`; the
-           * extra args ride the same registers as fixed params on
-           * x86-64 SysV, so nothing else needs to happen */
-          tok = tok->next;
-          expect_punct(")");
-          break;
-        }
         expect_punct(",");
       }
     }
@@ -1275,8 +1427,11 @@ static Node *parse_declarator(Type *base, Type **out) {
     Node *n = node_new(ND_FUNC);
     n->name = name;
     n->type = t;
-    if (consume_punct("{"))
+    if (consume_punct("{")) {
+      cur_fn = t;
       n->body = parse_block();
+      cur_fn = NULL;
+    }
     return n;
   }
 
@@ -1407,5 +1562,6 @@ static Node *parse_program(void) {
 
 Node *parse(Token *t) {
   tok = t;
+  register_typedef("va_list", builtin_va_list_type());
   return parse_program();
 }

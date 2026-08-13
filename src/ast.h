@@ -33,6 +33,7 @@ struct Type {
   Type *base;        /* pointee / element type */
   Type *ret;         /* TY_FUNC return type */
   Node *params;      /* TY_FUNC params, ND_DECL nodes linked by next */
+  int is_variadic;   /* TY_FUNC: "..." params; stdarg machinery */
   Member *members;   /* TY_STRUCT / TY_UNION */
   Type *mark_prev;   /* cycle guard for the -a dump & struct member walks */
 };
@@ -76,6 +77,8 @@ typedef enum {
   ND_SIZEOF,         /* sizeof expr (lhs) or sizeof type (targ) */
   ND_CAST,           /* value conversion, target type in targ */
   ND_INIT_LIST,      /* { e1, e2, ... } initializer, children in elems */
+  ND_VA_START,       /* va_start(ap, last); lhs is ap, va[] the counts */
+  ND_VA_ARG,         /* va_arg(ap, T); lhs is ap, targ the target type */
 } NodeKind;
 
 /* operator codes for ND_BIN/ND_UNARY/ND_ASSIGN.
@@ -117,6 +120,7 @@ struct Node {
   int val;                     /* ND_NUM, int value */
   int is_float;                /* ND_NUM: floating value in fval */
   int is_f;                    /* ND_NUM: the f/F suffix, a float literal */
+  int is_unsigned;             /* ND_NUM: hex value past INT_MAX */
   double fval;                 /* ND_NUM, float value */
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */
@@ -127,6 +131,8 @@ struct Node {
                                   ND_CALL: hidden struct return buffer;
                                   ND_RETURN: the function's "~ret" param */
   Type *targ;                  /* ND_SIZEOF / ND_CAST type operand */
+  int va[4];                   /* ND_VA_START: gp_off, fp_off, overflow
+                                  and reg-save rbp offsets */
   Init *inits;                 /* ND_DECL: flattened initializer leaves */
   int init_n;
 };

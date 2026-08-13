@@ -97,8 +97,11 @@ static Token *read_number(char *start, char **pp, int line, int at_bol, int spac
     t->fval = strtod(p, &p);
     t->is_float = 1;
   } else {
-    /* FIXME: strtol clamps on overflow, and we truncate to int */
-    t->val = (int)strtol(p, &p, 0);
+    /* the raw value decides the type: a hex literal past INT_MAX
+     * is an unsigned int; val keeps the 32-bit truncation */
+    long v = strtol(p, &p, 0);
+    t->val = (int)v;
+    t->is_unsigned = v > 2147483647;
   }
   if (*p == 'f' || *p == 'F') {
     /* "1f" is the float 1.0f; strtod stops at the suffix */

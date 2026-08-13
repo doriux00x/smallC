@@ -49,6 +49,10 @@ The language subset grows all the time. As of now it handles:
 - Initializers: scalars, arrays, strings, structs, and brace
   initializers with zero-filling
 - Struct and union values passed by value and returned by value
+- Variadic functions, with `va_list`, `va_start`, `va_arg`, `va_end`
+  and `va_copy`. `...` parameters ride the System V register save
+  area, so a compiler-built `va_list` can even be handed to libc's
+  `vprintf`
 - Function definitions, prototypes, and calls with the System V
   calling convention
 - The usual operators: arithmetic, comparisons with automatic
@@ -62,7 +66,7 @@ self-written C compiled by your system compiler.
 
 Known gaps, in no particular order:
 
-- No variadic functions, no VLA, no compound literals.
+- No VLA, no compound literals.
 - Very small preprocessor: object-like and function-like `#define`
   (no stringize or paste), `#include` in quote and <...> form with
   `-I` search paths, and `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/
