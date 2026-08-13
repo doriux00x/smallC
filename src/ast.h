@@ -79,6 +79,7 @@ typedef enum {
   ND_INIT_LIST,      /* { e1, e2, ... } initializer, children in elems */
   ND_VA_START,       /* va_start(ap, last); lhs is ap, va[] the counts */
   ND_VA_ARG,         /* va_arg(ap, T); lhs is ap, targ the target type */
+  ND_COMP_LIT,       /* C99 (T){...}; targ is T, elems the brace list */
 } NodeKind;
 
 /* operator codes for ND_BIN/ND_UNARY/ND_ASSIGN.

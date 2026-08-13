@@ -183,6 +183,13 @@ static void dump_expr(Node *n, int d) {
       for (Node *e = n->elems; e; e = e->next)
         dump_expr(e, d + 1);
       return;
+    case ND_COMP_LIT:
+      printf("compound literal of ");
+      dump_type(n->targ);
+      printf("\n");
+      for (Node *e = n->elems; e; e = e->next)
+        dump_expr(e, d + 1);
+      return;
     default:
       printf("<unknown node %d>\n", n->kind);
   }

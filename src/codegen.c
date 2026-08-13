@@ -165,6 +165,8 @@ static Type *real_type(Type *a, Type *b) {
 }
 
 static void resolve_expr(Node *n);
+static void resolve_initializer(Node *n);
+static void gen_init_stores(Node *n);
 
 /* wrap a value conversion; the backend knows int<->double,
  * int<->float and float<->double only */
@@ -476,6 +478,25 @@ static void resolve_expr(Node *n) {
     case ND_VA_ARG:
       resolve_expr(n->lhs);
       n->type = n->targ;
+      return;
+    case ND_COMP_LIT:
+      /* C99 compound literal: a hidden block-scope object with the
+       * brace list as its initializer. lvalue semantics, so the
+       * expression's value is the object's address */
+      if (scope == &base_scope)
+        error("compound literal at global scope is not supported");
+      n->type = n->targ;
+      n->init = n->elems;
+      resolve_initializer(n);
+      {
+        Obj *o = new_obj("~lit", n->type);
+        o->is_local = 1;
+        cur_offset -= roundup(o->type->size, 8);
+        o->offset = cur_offset;
+        push_var(o);
+        n->var = o;
+      }
+      n->type = n->var->type;
       return;
     case ND_INIT_LIST:
       error("initializer list not allowed in an expression");
@@ -938,6 +959,7 @@ void resolve(Node *prog) {
   base_scope.vars = NULL;
   labeln = 0;
   static_decls_n = 0;
+  cur_ret = NULL;   /* a fresh file starts outside every function */
 
   /* pass 1: every global and function goes into the base scope up
    * front, so references work in any declaration order */
@@ -1181,6 +1203,15 @@ static void gen_addr(Node *n) {
         fprintf(out, "  lea %s(%%rip), %%rax\n", o->symname ? o->symname : o->name);
       return;
     }
+    case ND_COMP_LIT:
+      /* the hidden local of a compound literal is always in this
+       * frame. the initializer stores run on every path that takes
+       * the address -- the value load, member/index access, and
+       * address-of -- so they live here, not in gen_expr */
+      if (n->inits)
+        gen_init_stores(n);
+      fprintf(out, "  lea %d(%%rbp), %%rax\n", n->var->offset);
+      return;
     case ND_INDEX: {
       gen_expr(n->lhs);
       fprintf(out, "  push %%rax\n");
@@ -1864,6 +1895,15 @@ static void gen_expr(Node *n) {
       fprintf(out, "  mov %%rdx, 16(%%rax)\n");
       return;
     }
+    case ND_COMP_LIT:
+      /* the expression's value is the object's address; the load
+       * below mirrors ND_VAR: arrays/functions/aggregates keep the
+       * address, scalars get their value */
+      gen_addr(n);
+      if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
+          n->type->kind != TY_STRUCT && n->type->kind != TY_UNION)
+        load(n->type);
+      return;
     case ND_VA_ARG: {
       /* the fetch: once ap's gp/fp offsets and the two areas are up,
        * register-class args come out of reg_save_area[offset], the
@@ -2024,6 +2064,33 @@ static void collect_labels(Node *s) {
   }
 }
 
+/* one store per flattened leaf of a brace initializer; the target
+ * is n->var in the current frame. shared by local ND_DECL and the
+ * hidden object of a compound literal */
+static void gen_init_stores(Node *n) {
+  for (int i = 0; i < n->init_n; i++) {
+    Init *it = &n->inits[i];
+    if (it->expr) {
+      gen_expr(it->expr);
+      fprintf(out, "  push %%rax\n");
+      fprintf(out, "  lea %d(%%rbp), %%rdi\n",
+              n->var->offset + it->offset);
+      fprintf(out, "  pop %%rax\n");
+    } else {
+      /* zero leaf */
+      if (it->ty->kind == TY_DOUBLE)
+        emit_const(0.0);
+      else if (it->ty->kind == TY_FLOAT)
+        emit_constf(0.0f);
+      else
+        fprintf(out, "  mov $0, %%rax\n");
+      fprintf(out, "  lea %d(%%rbp), %%rdi\n",
+              n->var->offset + it->offset);
+    }
+    store(it->ty);
+  }
+}
+
 static void gen_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -2035,28 +2102,7 @@ static void gen_stmt(Node *n) {
        * produces code; a static's init already landed in .data/.bss */
       if (n->init && !n->is_static) {
         if (n->inits) {
-          /* brace initializer: one store per flattened leaf */
-          for (int i = 0; i < n->init_n; i++) {
-            Init *it = &n->inits[i];
-            if (it->expr) {
-              gen_expr(it->expr);
-              fprintf(out, "  push %%rax\n");
-              fprintf(out, "  lea %d(%%rbp), %%rdi\n",
-                      n->var->offset + it->offset);
-              fprintf(out, "  pop %%rax\n");
-            } else {
-              /* zero leaf */
-              if (it->ty->kind == TY_DOUBLE)
-                emit_const(0.0);
-              else if (it->ty->kind == TY_FLOAT)
-                emit_constf(0.0f);
-              else
-                fprintf(out, "  mov $0, %%rax\n");
-              fprintf(out, "  lea %d(%%rbp), %%rdi\n",
-                      n->var->offset + it->offset);
-            }
-            store(it->ty);
-          }
+          gen_init_stores(n);
           return;
         }
         gen_expr(n->init);

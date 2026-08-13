@@ -48,6 +48,9 @@ The language subset grows all the time. As of now it handles:
   blocks
 - Initializers: scalars, arrays, strings, structs, and brace
   initializers with zero-filling
+- C99 compound literals: `(int[]){1, 2, 3}` and
+  `(struct point){1, 2}` create an anonymous initialized object at
+  block scope, a fresh one on every evaluation, usable as an lvalue
 - Struct and union values passed by value and returned by value
 - Variadic functions, with `va_list`, `va_start`, `va_arg`, `va_end`
   and `va_copy`. `...` parameters ride the System V register save
@@ -66,7 +69,7 @@ self-written C compiled by your system compiler.
 
 Known gaps, in no particular order:
 
-- No VLA, no compound literals.
+- No VLA.
 - Very small preprocessor: object-like and function-like `#define`
   (no stringize or paste), `#include` in quote and <...> form with
   `-I` search paths, and `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/

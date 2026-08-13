@@ -578,6 +578,7 @@ static Node *parse_mul(void);
 static Node *parse_unary(void);
 static Node *parse_postfix(void);
 static Node *parse_primary(void);
+static Node *parse_initializer(void);
 
 static Node *parse_expr(void) {
   return parse_assign();
@@ -738,6 +739,8 @@ static Node *parse_mul(void) {
 
 /* -------- unary and postfix -------- */
 
+static Node *postfix_suffix(Node *node);
+
 static Node *parse_unary(void) {
   if (consume_punct("+")) return new_unary('+', parse_unary());
   if (consume_punct("-")) return new_unary('-', parse_unary());
@@ -746,13 +749,21 @@ static Node *parse_unary(void) {
   if (consume_punct("*")) return new_unary('*', parse_unary());
   if (consume_punct("&")) return new_unary('&', parse_unary());
 
-  /* (typename) cast; the lookahead mirrors sizeof: a type keyword
-   * right after '(' can never start a parenthesized expression */
+  /* (typename) cast, or a C99 compound literal when a brace follows
+   * the type name: `(struct point){1,2}`. the literal is an anonymous
+   * initialized object, so it goes around parse_primary and straight
+   * into the same postfix loop a primary would get */
   if (is_punct("(") && tok->next && is_typespec_start(tok->next)) {
     tok = tok->next;
     char *dummy;
     Type *ty = declarator(parse_typespec(), &dummy);
     expect_punct(")");
+    if (is_punct("{")) {
+      Node *n = node_new(ND_COMP_LIT);
+      n->targ = ty;
+      n->elems = parse_initializer();
+      return postfix_suffix(n);
+    }
     Node *n = node_new(ND_CAST);
     n->targ = ty;
     n->lhs = parse_unary();
@@ -770,9 +781,10 @@ static Node *parse_unary(void) {
   return parse_postfix();
 }
 
-static Node *parse_postfix(void) {
-  Node *node = parse_primary();
-
+/* the postfix suffix loop: calls, indexing, member access, ++/--.
+ * a compound literal skips parse_primary but still goes through
+ * postfix_suffix, so `(struct point){1,2}.x` works */
+static Node *postfix_suffix(Node *node) {
   for (;;) {
     if (consume_punct("(")) {
       Node *call = node_new(ND_CALL);
@@ -834,6 +846,10 @@ static Node *parse_postfix(void) {
 
     return node;
   }
+}
+
+static Node *parse_postfix(void) {
+  return postfix_suffix(parse_primary());
 }
 
 /* -------- stdarg builtins -------- */
