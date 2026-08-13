@@ -29,6 +29,8 @@ The language subset grows all the time. As of now it handles:
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
 - Struct, union, and enum types
+- Bit-fields (`int x : 3`), including unnamed and zero-width
+  alignment markers; bit-field initializers are rejected
 - typedef
 - The const qualifier
 - The volatile qualifier, in all positions (`volatile int`,
@@ -169,7 +171,8 @@ Two debug flags, mostly useful while developing the compiler itself:
 
 The run tests double as feature demos. `tests/rungoto.c` covers the
 goto features, `tests/runstruct.c` the struct and union handling,
-`tests/runfloat.c` the floating point, and so on.
+`tests/runbit.c` the bit-fields, `tests/runfloat.c` the floating
+point, and so on.
 
 `make size` prints the binary size; the informal budget is to keep
 the whole compiler under 2 MB.

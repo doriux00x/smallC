@@ -70,7 +70,45 @@ Type *union_type(void) {
 void layout_struct(Type *t) {
   int off = 0;
   int max_align = 1;
+  /* an open bit-field unit: bit-fields of the same base type pack
+   * into it while they fit, then it is closed back into off */
+  int unit_off = -1;
+  int unit_bits = 0;
+  int unit_size = 0;
+
   for (Member *m = t->members; m; m = m->next) {
+    if (m->is_bitfield) {
+      if (m->bit_width == 0) {
+        /* the anonymous marker: force the next bit-field into a
+         * fresh unit, aligned to the *next* member's type */
+        if (unit_off >= 0)
+          off = unit_off + unit_size;
+        unit_off = -1;
+        continue;
+      }
+      if (unit_off < 0 || m->type->size != unit_size ||
+          m->bit_width > unit_size * 8 - unit_bits) {
+        if (unit_off >= 0)
+          off = unit_off + unit_size;
+        int a = type_align(m->type);
+        off = (off + a - 1) / a * a;
+        unit_off = off;
+        unit_bits = 0;
+        unit_size = m->type->size;
+      }
+      m->offset = unit_off;
+      m->bit_offset = unit_bits;
+      unit_bits += m->bit_width;
+      if (type_align(m->type) > max_align)
+        max_align = type_align(m->type);
+      continue;
+    }
+    if (unit_off >= 0) {
+      /* a plain member closes the running bit-field unit */
+      off = unit_off + unit_size;
+      unit_off = -1;
+      unit_bits = 0;
+    }
     int a = type_align(m->type);
     off = (off + a - 1) / a * a;
     m->offset = off;
@@ -78,6 +116,8 @@ void layout_struct(Type *t) {
     if (a > max_align)
       max_align = a;
   }
+  if (unit_off >= 0)
+    off = unit_off + unit_size;
   t->align = max_align;
   t->size = (off + max_align - 1) / max_align * max_align;
 }
@@ -130,4 +170,144 @@ Type *func_type(Type *ret) {
   t->ret = ret;
   t->size = 0;
   return t;
+}
+
+static CVal cv_int(int v)   { CVal c = {0, v, 0};    return c; }
+static CVal cv_fp(double f) { CVal c = {1, 0, f};    return c; }
+
+/* every node kind const_fold() can evaluate, i.e. an integer
+ * constant expression with no variables or side effects */
+int is_const_expr(Node *n) {
+  switch (n->kind) {
+    case ND_NUM:
+    case ND_SIZEOF:
+      return 1;
+    case ND_CAST:
+      return is_const_expr(n->lhs);
+    case ND_UNARY:
+    case ND_COND:
+      return is_const_expr(n->lhs) &&
+             (!n->rhs || is_const_expr(n->rhs)) &&
+             (!n->cond || is_const_expr(n->cond)) &&
+             (!n->els || is_const_expr(n->els));
+    case ND_BIN:
+      return is_const_expr(n->lhs) && is_const_expr(n->rhs);
+    default:
+      return 0;
+  }
+}
+
+/* constant folding for case labels, bit-field widths and global
+ * initializers. a folded value is either an integer or a double */
+CVal const_fold(Node *n) {
+  switch (n->kind) {
+    case ND_NUM:
+      if (n->is_float)
+        return cv_fp(n->fval);
+      return cv_int(n->val);
+    case ND_SIZEOF:
+      if (n->lhs)
+        return cv_int(type_size(n->lhs->type));
+      return cv_int(type_size(n->targ));
+    case ND_CAST:
+      if (n->targ->kind == TY_FLOAT || n->targ->kind == TY_DOUBLE) {
+        CVal c = const_fold(n->lhs);
+        return cv_fp(c.is_float ? c.fval : (double)c.val);
+      }
+      if (n->targ->kind == TY_PTR)
+        error("unsupported global initializer");
+      {
+        CVal c = const_fold(n->lhs);
+        return cv_int(c.is_float ? (int)c.fval : c.val);
+      }
+    case ND_UNARY:
+      switch (n->op) {
+        case '+': {
+          CVal c = const_fold(n->lhs);
+          return c;
+        }
+        case '-': {
+          CVal c = const_fold(n->lhs);
+          return c.is_float ? cv_fp(-c.fval) : cv_int(-c.val);
+        }
+        case '~': {
+          CVal c = const_fold(n->lhs);
+          if (c.is_float)
+            error("invalid operands to binary operator");
+          return cv_int(~c.val);
+        }
+        case '!': {
+          CVal c = const_fold(n->lhs);
+          return cv_int(c.is_float ? c.fval == 0 : !c.val);
+        }
+        default: error("unsupported global initializer");
+      }
+    case ND_BIN: {
+      CVal l = const_fold(n->lhs);
+      CVal r = const_fold(n->rhs);
+      if (l.is_float || r.is_float) {
+        if (n->op == '%' || n->op == '&' || n->op == '|' ||
+            n->op == '^' || n->op == OP_SHL || n->op == OP_SHR)
+          error("invalid operands to binary operator");
+        double a = l.is_float ? l.fval : (double)l.val;
+        double b = r.is_float ? r.fval : (double)r.val;
+        switch (n->op) {
+          case '+': return cv_fp(a + b);
+          case '-': return cv_fp(a - b);
+          case '*': return cv_fp(a * b);
+          case '/':
+            if (b == 0)
+              error("division by zero in constant expression");
+            return cv_fp(a / b);
+          case OP_EQ:  return cv_int(a == b);
+          case OP_NE:  return cv_int(a != b);
+          case '<':  return cv_int(a < b);
+          case '>':  return cv_int(a > b);
+          case OP_LE: return cv_int(a <= b);
+          case OP_GE: return cv_int(a >= b);
+          case OP_LOGAND: return cv_int(a != 0 && b != 0);
+          case OP_LOGOR:  return cv_int(a != 0 || b != 0);
+          default: error("unsupported global initializer");
+        }
+      } else {
+        int lv = l.val;
+        int rv = r.val;
+        switch (n->op) {
+          case '+': return cv_int(lv + rv);
+          case '-': return cv_int(lv - rv);
+          case '*': return cv_int(lv * rv);
+          case '/':
+            if (rv == 0)
+              error("division by zero in constant expression");
+            return cv_int(lv / rv);
+          case '%':
+            if (rv == 0)
+              error("division by zero in constant expression");
+            return cv_int(lv % rv);
+          case '&':  return cv_int(lv & rv);
+          case '|':  return cv_int(lv | rv);
+          case '^':  return cv_int(lv ^ rv);
+          case OP_SHL: return cv_int(lv << rv);
+          case OP_SHR: return cv_int(lv >> rv);
+          case OP_EQ:  return cv_int(lv == rv);
+          case OP_NE:  return cv_int(lv != rv);
+          case '<':  return cv_int(lv < rv);
+          case '>':  return cv_int(lv > rv);
+          case OP_LE: return cv_int(lv <= rv);
+          case OP_GE: return cv_int(lv >= rv);
+          case OP_LOGAND: return cv_int(lv && rv);
+          case OP_LOGOR:  return cv_int(lv || rv);
+          default: error("unsupported global initializer");
+        }
+      }
+    }
+    case ND_COND: {
+      CVal c = const_fold(n->cond);
+      return const_fold(c.is_float ? (c.fval != 0 ? n->then : n->els) :
+                                    (c.val ? n->then : n->els));
+    }
+    default:
+      error("unsupported global initializer");
+  }
+  error("unsupported global initializer");
 }

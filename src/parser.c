@@ -153,7 +153,7 @@ static Type *builtin_va_list_type(void) {
   Member **link = &st->members;
   for (int i = 0; i < 4; i++) {
     Member *m = xmalloc(sizeof(Member));
-    m->next = NULL;
+    memset(m, 0, sizeof(Member));
     m->name = names[i];
     m->type = tys[i];
     *link = m;
@@ -307,12 +307,31 @@ static Member *parse_struct_members(void) {
     for (;;) {
       char *name;
       Type *mt = declarator(base, &name);
-      if (!name)
-        error_at(tok->loc, "struct members must be named");
       Member *m = xmalloc(sizeof(Member));
-      m->next = NULL;
+      memset(m, 0, sizeof(Member));
       m->name = name;
       m->type = mt;
+      if (consume_punct(":")) {
+        /* a bit-field; the width is an integer constant expression.
+         * zero width is the anonymous alignment marker */
+        Node *w = parse_expr();
+        if (!is_const_expr(w))
+          error_at(tok->loc, "bit-field width must be a constant expression");
+        CVal cv = const_fold(w);
+        if (cv.is_float || cv.val < 0)
+          error_at(tok->loc, "bit-field width must be a non-negative integer");
+        if (mt->kind != TY_CHAR && mt->kind != TY_SHORT &&
+            mt->kind != TY_INT && mt->kind != TY_LONG && !mt->is_bool)
+          error_at(tok->loc, "invalid bit-field type");
+        if (cv.val > mt->size * 8)
+          error_at(tok->loc, "bit-field width too large for its type");
+        if (cv.val == 0 && name)
+          error_at(tok->loc, "named bit-field must have a non-zero width");
+        m->is_bitfield = 1;
+        m->bit_width = cv.val;
+      } else if (!name) {
+        error_at(tok->loc, "struct members must be named");
+      }
       *link = m;
       link = &m->next;
       if (!consume_punct(","))

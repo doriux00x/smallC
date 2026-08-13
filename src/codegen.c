@@ -60,17 +60,6 @@ static Type *cur_fn_ret;   /* return type of the function being emitted */
 static Node **static_decls;
 static int static_decls_n, static_decls_cap;
 
-/* constant expression support, used by resolve_stmt (case labels)
- * and gen_data (global initializers) */
-typedef struct CVal CVal;
-struct CVal {
-  int is_float;   /* the value lives in fval */
-  int val;
-  double fval;
-};
-static CVal const_fold(Node *n);
-static int is_const_expr(Node *n);
-
 /* ------------------------------------------------------------------ */
 /* symbol tables and type inference (resolve)                          */
 /* ------------------------------------------------------------------ */
@@ -141,7 +130,7 @@ static void check_type_supported(Type *t) {
 
 static Member *find_member(Type *st, char *name) {
   for (Member *m = st->members; m; m = m->next)
-    if (strcmp(m->name, name) == 0)
+    if (m->name && strcmp(m->name, name) == 0)
       return m;
   return NULL;
 }
@@ -290,6 +279,8 @@ static void resolve_unary(Node *n) {
       n->type = ot->base;
       return;
     case '&':
+      if (n->lhs->kind == ND_MEMBER && n->lhs->is_bitfield)
+        error("cannot take the address of a bit-field");
       n->type = ptr_to(ot);
       return;
     case OP_INC:
@@ -372,6 +363,9 @@ static void resolve_expr(Node *n) {
         error("no member named '%s'", n->name);
       check_type_supported(m->type);
       n->type = m->type;
+      n->is_bitfield = m->is_bitfield;
+      n->bit_offset = m->bit_offset;
+      n->bit_width = m->bit_width;
       return;
     }
     case ND_ASSIGN: {
@@ -661,6 +655,8 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
       Member *dm = find_member(ty, es->name);
       if (!dm)
         error("no member named '%s'", es->name);
+      if (dm->is_bitfield)
+        error("a bit-field cannot be initialized by a brace list");
       Member *p = m;
       for (; p && p != dm; p = p->next)
         ;
@@ -680,6 +676,8 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
       es = es->next;
       continue;
     }
+    if (m->is_bitfield)
+      error("a bit-field cannot be initialized by a brace list");
     es = init_fill(m->type, off + m->offset, es);
   }
   /* a designator left over after the members ran out targets an
@@ -690,6 +688,8 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
     Member *dm = find_member(ty, es->name);
     if (!dm)
       error("no member named '%s'", es->name);
+    if (dm->is_bitfield)
+      error("a bit-field cannot be initialized by a brace list");
     init_fill(dm->type, off + dm->offset, es->then);
     es = es->next;
   }
@@ -858,28 +858,6 @@ static void resolve_initializer(Node *n) {
       it->expr = cast_of(it->expr, it->ty);
     else if (!is_real(it->ty) && is_real(it->expr->type))
       it->expr = cast_of(it->expr, it->ty);
-  }
-}
-
-/* every node kind const_fold() can evaluate, i.e. an integer
- * constant expression with no variables or side effects */
-static int is_const_expr(Node *n) {
-  switch (n->kind) {
-    case ND_NUM:
-    case ND_SIZEOF:
-      return 1;
-    case ND_CAST:
-      return is_const_expr(n->lhs);
-    case ND_UNARY:
-    case ND_COND:
-      return is_const_expr(n->lhs) &&
-             (!n->rhs || is_const_expr(n->rhs)) &&
-             (!n->cond || is_const_expr(n->cond)) &&
-             (!n->els || is_const_expr(n->els));
-    case ND_BIN:
-      return is_const_expr(n->lhs) && is_const_expr(n->rhs);
-    default:
-      return 0;
   }
 }
 
@@ -1263,8 +1241,7 @@ static void emit_const(double d) {
 /* load the value at (%rax) into %rax (ints) or %xmm0 (reals),
  * sign or zero extending to fit the declared type. this is where
  * signedness enters the register */
-static void load(Type *t) {
-  if (t->kind == TY_DOUBLE) {
+static void load(Type *t) {  if (t->kind == TY_DOUBLE) {
     fprintf(out, "  movsd (%%rax), %%xmm0\n");
     return;
   }
@@ -1321,6 +1298,115 @@ static void store(Type *t) {
     default:
       fprintf(out, "  mov %%rax, (%%rdi)\n");
       return;
+  }
+}
+
+/* %rax = the address of the storage unit; %rax becomes the value of
+ * the bit-field (n->bit_width bits at n->bit_offset). the unit is
+ * loaded whole -- sign does not matter, the shifts flush the bits
+ * above the field -- then the field is sign or zero extended */
+static void gen_bitfield_load(Node *n) {
+  int b = n->bit_offset;
+  int w = n->bit_width;
+  switch (n->type->size) {
+    case 1:
+      fprintf(out, "  movzbl (%%rax), %%eax\n");
+      break;
+    case 2:
+      fprintf(out, "  movzwl (%%rax), %%eax\n");
+      break;
+    case 4:
+      fprintf(out, "  movl (%%rax), %%eax\n");
+      break;
+    default:
+      fprintf(out, "  movq (%%rax), %%rax\n");
+      break;
+  }
+  if (b)
+    fprintf(out, "  shrq $%d, %%rax\n", b);
+  if (w < 64) {
+    fprintf(out, "  shlq $%d, %%rax\n", 64 - w);
+    fprintf(out, "  %s $%d, %%rax\n",
+            n->type->is_unsigned || n->type->is_bool ? "shrq" : "sarq",
+            64 - w);
+  }
+}
+
+/* %rdi = address of the storage unit, %rax = the value to store.
+ * merges the field into the unit with a read-modify-write. %rax ends
+ * with the plain stored value (the expression's value), and %rcx is
+ * untouched so postfix ++/-- can hold the old value in it */
+static void gen_bitfield_store(Node *n) {
+  int b = n->bit_offset;
+  int w = n->bit_width;
+  if (n->type->is_bool) {
+    /* _Bool stores normalize to 0/1; the raw mask below would turn
+     * a 2 stored into a 1-bit field into 0 */
+    fprintf(out, "  test %%rax, %%rax\n");
+    fprintf(out, "  setne %%al\n");
+    fprintf(out, "  movzbq %%al, %%rax\n");
+  }
+  if (w < 64) {
+    /* flush the garbage above the field width and restore the field
+     * into [0,w): the register value of the assignment */
+    fprintf(out, "  shlq $%d, %%rax\n", 64 - w);
+    fprintf(out, "  shrq $%d, %%rax\n", 64 - w);
+  }
+  fprintf(out, "  push %%rax\n");   /* [plain value] */
+  if (b)
+    fprintf(out, "  shlq $%d, %%rax\n", b);   /* into place */
+  fprintf(out, "  push %%rax\n");   /* [plain value, positioned] */
+  switch (n->type->size) {
+    case 1:
+      fprintf(out, "  movzbl (%%rdi), %%edx\n");
+      break;
+    case 2:
+      fprintf(out, "  movzwl (%%rdi), %%edx\n");
+      break;
+    case 4:
+      fprintf(out, "  movl (%%rdi), %%edx\n");
+      break;
+    default:
+      fprintf(out, "  movq (%%rdi), %%rdx\n");
+      break;
+  }
+  if (w < 64) {
+    /* (1 << w) - 1: ones over [0,w), shifted to [b, b+w); the
+     * notq below leaves ones everywhere else */
+    fprintf(out, "  mov $1, %%rax\n");
+    fprintf(out, "  shlq $%d, %%rax\n", w);
+    fprintf(out, "  subq $1, %%rax\n");
+  } else {
+    fprintf(out, "  mov $0, %%rax\n");
+  }
+  if (b)
+    fprintf(out, "  shlq $%d, %%rax\n", b);
+  fprintf(out, "  notq %%rax\n");   /* unit mask with the field cleared */
+  fprintf(out, "  andq %%rax, %%rdx\n");
+  fprintf(out, "  pop %%rax\n");    /* the positioned value */
+  fprintf(out, "  orq %%rax, %%rdx\n");
+  switch (n->type->size) {
+    case 1:
+      fprintf(out, "  movb %%dl, (%%rdi)\n");
+      break;
+    case 2:
+      fprintf(out, "  movw %%dx, (%%rdi)\n");
+      break;
+    case 4:
+      fprintf(out, "  movl %%edx, (%%rdi)\n");
+      break;
+    default:
+      fprintf(out, "  movq %%rdx, (%%rdi)\n");
+      break;
+  }
+  fprintf(out, "  pop %%rax\n");    /* the plain stored value */
+  if (w < 64) {
+    /* widen the stored value to the field's signedness, the same
+     * way the load does: the raw int is not the field's value */
+    fprintf(out, "  shlq $%d, %%rax\n", 64 - w);
+    fprintf(out, "  %s $%d, %%rax\n",
+            n->type->is_unsigned || n->type->is_bool ? "shrq" : "sarq",
+            64 - w);
   }
 }
 
@@ -1771,7 +1857,10 @@ static void gen_expr(Node *n) {
       }
 
       fprintf(out, "  pop %%rdi\n");
-      store(n->lhs->type);
+      if (n->lhs->is_bitfield)
+        gen_bitfield_store(n->lhs);
+      else
+        store(n->lhs->type);
       return;
     }
     case ND_BIN:
@@ -1931,7 +2020,10 @@ static void gen_expr(Node *n) {
                       type_size(n->type->base) : 1;
           gen_addr(n->lhs);
           fprintf(out, "  push %%rax\n");          /* [addr] */
-          load(n->type);
+          if (n->lhs->kind == ND_MEMBER && n->lhs->is_bitfield)
+            gen_bitfield_load(n->lhs);
+          else
+            load(n->type);
           if (n->type->kind == TY_DOUBLE) {
             /* reals go through xmm0; the old value is kept in
              * xmm1 for the postfix result, and pointers step a
@@ -1971,14 +2063,20 @@ static void gen_expr(Node *n) {
             fprintf(out, "  %s $%d, %%rax\n",
                     n->op == OP_INC ? "add" : "sub", scale);
             fprintf(out, "  pop %%rdi\n");          /* addr */
-            store(n->type);
+            if (n->lhs->is_bitfield)
+              gen_bitfield_store(n->lhs);
+            else
+              store(n->type);
           } else {
             fprintf(out, "  push %%rax\n");         /* [addr, old] */
             fprintf(out, "  %s $%d, %%rax\n",
                     n->op == OP_INC ? "add" : "sub", scale);
             fprintf(out, "  pop %%rcx\n");          /* old value */
             fprintf(out, "  pop %%rdi\n");          /* addr */
-            store(n->type);
+            if (n->lhs->is_bitfield)
+              gen_bitfield_store(n->lhs);
+            else
+              store(n->type);
             fprintf(out, "  mov %%rcx, %%rax\n");   /* result: old */
           }
           return;
@@ -2009,6 +2107,10 @@ static void gen_expr(Node *n) {
       return;
     case ND_MEMBER:
       gen_addr(n);
+      if (n->is_bitfield) {
+        gen_bitfield_load(n);
+        return;
+      }
       if (n->type->kind != TY_ARRAY && n->type->kind != TY_FUNC &&
           n->type->kind != TY_STRUCT && n->type->kind != TY_UNION)
         load(n->type);
@@ -2413,124 +2515,6 @@ static void emit_string(Node *n) {
     fprintf(out, "  .byte %u\n", (unsigned char)n->str[i]);
   fprintf(out, "  .byte 0\n");
   section(".text");
-}
-
-/* constant folding for global initializers. a folded value is either
- * an integer or a double; the declared type of the object applies
- * the final narrowing (a double global keeps the double bits, a float
- * global rounds to float32, an int global truncates) */
-static CVal cv_int(int v)   { CVal c = {0, v, 0};    return c; }
-static CVal cv_fp(double f) { CVal c = {1, 0, f};    return c; }
-
-static CVal const_fold(Node *n) {
-  switch (n->kind) {
-    case ND_NUM:
-      if (n->is_float)
-        return cv_fp(n->fval);
-      return cv_int(n->val);
-    case ND_SIZEOF:
-      if (n->lhs)
-        return cv_int(type_size(n->lhs->type));
-      return cv_int(type_size(n->targ));
-    case ND_CAST:
-      if (n->targ->kind == TY_FLOAT || n->targ->kind == TY_DOUBLE) {
-        CVal c = const_fold(n->lhs);
-        return cv_fp(c.is_float ? c.fval : (double)c.val);
-      }
-      if (n->targ->kind == TY_PTR)
-        error("unsupported global initializer");
-      {
-        CVal c = const_fold(n->lhs);
-        return cv_int(c.is_float ? (int)c.fval : c.val);
-      }
-    case ND_UNARY:
-      switch (n->op) {
-        case '+': {
-          CVal c = const_fold(n->lhs);
-          return c;
-        }
-        case '-': {
-          CVal c = const_fold(n->lhs);
-          return c.is_float ? cv_fp(-c.fval) : cv_int(-c.val);
-        }
-        case '~': {
-          CVal c = const_fold(n->lhs);
-          if (c.is_float)
-            error("invalid operands to binary operator");
-          return cv_int(~c.val);
-        }
-        case '!': {
-          CVal c = const_fold(n->lhs);
-          return cv_int(c.is_float ? c.fval == 0 : !c.val);
-        }
-        default: error("unsupported global initializer");
-      }
-    case ND_BIN: {
-      CVal l = const_fold(n->lhs);
-      CVal r = const_fold(n->rhs);
-      if (l.is_float || r.is_float) {
-        if (n->op == '%' || n->op == '&' || n->op == '|' ||
-            n->op == '^' || n->op == OP_SHL || n->op == OP_SHR)
-          error("invalid operands to binary operator");
-        double a = l.is_float ? l.fval : (double)l.val;
-        double b = r.is_float ? r.fval : (double)r.val;
-        switch (n->op) {
-          case '+': return cv_fp(a + b);
-          case '-': return cv_fp(a - b);
-          case '*': return cv_fp(a * b);
-          case '/':
-            if (b == 0)
-              error("division by zero in constant expression");
-            return cv_fp(a / b);
-          case OP_EQ:  return cv_int(a == b);
-          case OP_NE:  return cv_int(a != b);
-          case '<':    return cv_int(a < b);
-          case '>':    return cv_int(a > b);
-          case OP_LE:  return cv_int(a <= b);
-          case OP_GE:  return cv_int(a >= b);
-          case OP_LOGAND: return cv_int(a != 0 && b != 0);
-          case OP_LOGOR:  return cv_int(a != 0 || b != 0);
-          default: error("unsupported global initializer");
-        }
-      }
-      int lv = l.val, rv = r.val;
-      switch (n->op) {
-        case '+': return cv_int(lv + rv);
-        case '-': return cv_int(lv - rv);
-        case '*': return cv_int(lv * rv);
-        case '/':
-          if (rv == 0)
-            error("division by zero in constant expression");
-          return cv_int(lv / rv);
-        case '%':
-          if (rv == 0)
-            error("division by zero in constant expression");
-          return cv_int(lv % rv);
-        case '&':  return cv_int(lv & rv);
-        case '|':  return cv_int(lv | rv);
-        case '^':  return cv_int(lv ^ rv);
-        case OP_SHL: return cv_int(lv << rv);
-        case OP_SHR: return cv_int(lv >> rv);
-        case OP_EQ:  return cv_int(lv == rv);
-        case OP_NE:  return cv_int(lv != rv);
-        case '<':  return cv_int(lv < rv);
-        case '>':  return cv_int(lv > rv);
-        case OP_LE: return cv_int(lv <= rv);
-        case OP_GE: return cv_int(lv >= rv);
-        case OP_LOGAND: return cv_int(lv && rv);
-        case OP_LOGOR:  return cv_int(lv || rv);
-        default: error("unsupported global initializer");
-      }
-    }
-    case ND_COND: {
-      CVal c = const_fold(n->cond);
-      return const_fold(c.is_float ? (c.fval != 0 ? n->then : n->els) :
-                                    (c.val ? n->then : n->els));
-    }
-    default:
-      error("unsupported global initializer");
-  }
-  error("unsupported global initializer");
 }
 
 static void gen_data(Node *n) {

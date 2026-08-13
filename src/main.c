@@ -58,7 +58,13 @@ static void dump_type(Type *t) {
       t->mark_prev = dumping;
       dumping = t;
       for (Member *m = t->members; m; m = m->next) {
-        printf("%s@%d: ", m->name, m->offset);
+        if (m->name)
+          printf("%s@%d", m->name, m->offset);
+        else
+          printf(":%d", m->bit_width);
+        if (m->is_bitfield)
+          printf(".%d-%d", m->bit_offset, m->bit_offset + m->bit_width);
+        printf(": ");
         dump_type(m->type);
         if (m->next)
           printf(", ");

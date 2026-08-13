@@ -14,9 +14,12 @@ typedef struct Member Member;
 
 struct Member {
   Member *next;
-  char *name;
+  char *name;            /* NULL for an anonymous bit-field */
   Type *type;
-  int offset;          /* filled in by layout_struct() */
+  int offset;            /* byte offset of the storage unit */
+  int is_bitfield;       /* int x : 3; */
+  int bit_offset;        /* bit position within the unit */
+  int bit_width;         /* bits used; 0 = just an alignment marker */
 };
 
 struct Type {
@@ -47,6 +50,18 @@ Type *union_type(void);
 void layout_struct(Type *t);
 void layout_union(Type *t);
 int type_size(Type *t);
+
+/* an integer or real constant value produced by const_fold() */
+typedef struct {
+  int is_float;   /* the value lives in fval */
+  int val;
+  double fval;
+} CVal;
+
+CVal const_fold(Node *n);
+/* true when every node kind const_fold() can evaluate, i.e. an
+ * integer constant expression with no variables or side effects */
+int is_const_expr(Node *n);
 
 typedef enum {
   ND_DECL,           /* variable declaration */
@@ -128,6 +143,11 @@ struct Node {
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */
   int is_prefix;               /* ND_UNARY ++/--: prefix vs postfix */
+  int is_bitfield;             /* ND_MEMBER: bit-field access; the
+                                  width and bit position copied from
+                                  the Member at resolve time */
+  int bit_offset;
+  int bit_width;
   int is_static;               /* ND_DECL / ND_FUNC: static storage */
   int is_extern;               /* ND_DECL / ND_FUNC: extern class */
   Obj *var;                    /* resolved symbol, ND_VAR / ND_STR;
