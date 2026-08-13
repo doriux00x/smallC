@@ -2,9 +2,7 @@
 #include "token.h"
 #include "util.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "libc.h"
 
 static Token *tok;
 
@@ -360,10 +358,15 @@ static Type *parse_typespec(void) {
         tag = expect(TK_IDENT, "union tag")->name;
       if (consume_punct("{")) {
         /* the tag goes in before the members, so the body can
-         * reference itself (union Node *next) */
-        Type *ut = union_type();
-        if (tag)
-          register_tag(tag, ut);
+         * reference itself (union Node *next); completing a tag
+         * that was only forward-declared fills in the placeholder
+         * so earlier typedefs of it see the members too */
+        Type *ut = tag ? find_tag(tag) : NULL;
+        if (!ut) {
+          ut = union_type();
+          if (tag)
+            register_tag(tag, ut);
+        }
         ut->members = parse_struct_members();
         if (!ut->members)
           error_at(tok->loc, "empty union");
@@ -374,8 +377,12 @@ static Type *parse_typespec(void) {
       if (!tag)
         error_at(tok->loc, "expected union tag");
       t = find_tag(tag);
-      if (!t || t->kind != TY_UNION)
-        error_at(tok->loc, "unknown union '%s'", tag);
+      if (!t || t->kind != TY_UNION) {
+        /* an unknown tag in "union X" is a forward declaration;
+         * it stays incomplete until a definition appears */
+        t = union_type();
+        register_tag(tag, t);
+      }
       continue;
     }
     if (consume(TK_STRUCT)) {
@@ -384,10 +391,15 @@ static Type *parse_typespec(void) {
         tag = expect(TK_IDENT, "struct tag")->name;
       if (consume_punct("{")) {
         /* the tag goes in before the members, so the body can
-         * reference itself (struct Node *next) */
-        Type *st = struct_type();
-        if (tag)
-          register_tag(tag, st);
+         * reference itself (struct Node *next); completing a tag
+         * that was only forward-declared fills in the placeholder
+         * so earlier typedefs of it see the members too */
+        Type *st = tag ? find_tag(tag) : NULL;
+        if (!st) {
+          st = struct_type();
+          if (tag)
+            register_tag(tag, st);
+        }
         st->members = parse_struct_members();
         if (!st->members)
           error_at(tok->loc, "empty struct");
@@ -398,8 +410,13 @@ static Type *parse_typespec(void) {
       if (!tag)
         error_at(tok->loc, "expected struct tag");
       t = find_tag(tag);
-      if (!t)
-        error_at(tok->loc, "unknown struct '%s'", tag);
+      if (!t) {
+        /* an unknown tag in "struct X" (no braces) is a forward
+         * declaration; the type is incomplete until a definition
+         * appears, which is enough for pointers to it */
+        t = struct_type();
+        register_tag(tag, t);
+      }
       continue;
     }
     if (at(TK_IDENT)) {
@@ -409,21 +426,26 @@ static Type *parse_typespec(void) {
        * type ("typedef char T;", "int T = 5;") */
       if (tt && !typedef_ident_is_name(tok)) {
         tok = tok->next;
-        /* a typedef'd name works like a type keyword; modifiers before
-         * it ("unsigned myint") apply to a copy so the alias itself is
-         * never mutated (all uses share the registry entry) */
-        t = xmalloc(sizeof(Type));
-        *t = *tt;
-        if (longs && (t->kind == TY_INT || t->kind == TY_LONG))
-          t->kind = TY_LONG;
-        if (longs >= 2)
-          t->is_longlong = 1;
-        if (is_unsigned)
-          t->is_unsigned = 1;
-        if (is_const)
-          t->is_const = 1;
-        if (is_volatile)
-          t->is_volatile = 1;
+        if (longs || is_unsigned || is_const || is_volatile) {
+          /* modifiers apply to a copy so the alias itself is never
+           * mutated; the unmodified case shares the registry entry,
+           * which keeps a forward-declared struct completed later
+           * visible through the alias */
+          t = xmalloc(sizeof(Type));
+          *t = *tt;
+          if (longs && (t->kind == TY_INT || t->kind == TY_LONG))
+            t->kind = TY_LONG;
+          if (longs >= 2)
+            t->is_longlong = 1;
+          if (is_unsigned)
+            t->is_unsigned = 1;
+          if (is_const)
+            t->is_const = 1;
+          if (is_volatile)
+            t->is_volatile = 1;
+        } else {
+          t = tt;
+        }
         continue;   /* let trailing qualifiers ("myint const") apply */
       }
     }
@@ -809,6 +831,16 @@ static Node *parse_primary(void) {
   }
 
   Token *t;
+  if (tok->kind >= TK_VOID && tok->kind < TK_PUNCT) {
+    /* a keyword token is its own enumerator: TK_VOID, TK_IF, ...
+     * so "int x = TK_VOID;" works, which is how the compiler's own
+     * keyword table is written: {"void", TK_VOID} */
+    Node *n = node_new(ND_NUM);
+    n->val = tok->kind;
+    tok = tok->next;
+    return n;
+  }
+
   if ((t = consume(TK_NUM))) {
     Node *n = node_new(ND_NUM);
     if (t->is_float) {
@@ -825,6 +857,17 @@ static Node *parse_primary(void) {
     Node *n = node_new(ND_STR);
     n->str = t->str;
     n->str_len = t->str_len;
+    /* adjacent string literals ("a" "b") coalesce into one, per C */
+    while (at(TK_STR)) {
+      Token *u = tok;
+      tok = tok->next;
+      char *buf = xmalloc(n->str_len + u->str_len + 1);
+      memcpy(buf, n->str, n->str_len);
+      memcpy(buf + n->str_len, u->str, u->str_len);
+      buf[n->str_len + u->str_len] = '\0';
+      n->str = buf;
+      n->str_len = n->str_len + u->str_len;
+    }
     return n;
   }
 
@@ -1085,6 +1128,15 @@ static Type *parse_params(Type *ret) {
 
         if (consume_punct(")"))
           break;
+        if (tok->kind == TK_PUNCT && tok->len == 3 &&
+            memcmp(tok->loc, "...", 3) == 0) {
+          /* "..." variadic: libc calls are declared with `...`; the
+           * extra args ride the same registers as fixed params on
+           * x86-64 SysV, so nothing else needs to happen */
+          tok = tok->next;
+          expect_punct(")");
+          break;
+        }
         expect_punct(",");
       }
     }
@@ -1109,6 +1161,11 @@ static Type *suffix_loop(Type *t) {
           len = ec->val;
           tok = tok->next;
         }
+      } else if (!is_punct("]")) {
+        /* an arbitrary constant expression: "int a[ARRAY_LEN(b) == 3 ?
+         * 1 : -1];" parses like any primary expression, folds to an
+         * integer, and is discarded (checked at parse time only) */
+        len = (int)eval_const(parse_expr());
       }
       expect_punct("]");
       if (dim_n < 64)
@@ -1234,6 +1291,28 @@ static Node *parse_declarator(Type *base, Type **out) {
 
 /* "typedef <typespec> <declarator>, ...;": the declarator's type is
  * registered under its name, no storage is created */
+/* GNU __attribute__((...)) is resolved by gcc, not by the program;
+ * the declaration is what it is either way, so skip the clause */
+static void skip_attribute(void) {
+  if (tok->kind != TK_IDENT || strcmp(tok->name, "__attribute__") != 0)
+    return;
+  tok = tok->next;
+  expect_punct("(");
+  int depth = 0;
+  for (;;) {
+    if (tok->kind == TK_EOF)
+      error_at(tok->loc, "unterminated __attribute__");
+    if (tok->kind == TK_PUNCT && *tok->loc == '(' && tok->len == 1)
+      depth++;
+    else if (tok->kind == TK_PUNCT && *tok->loc == ')' && tok->len == 1) {
+      if (depth-- == 0)
+        break;
+    }
+    tok = tok->next;
+  }
+  tok = tok->next;
+}
+
 static void parse_typedef(void) {
   for (;;) {
     Token *start = tok;
@@ -1244,6 +1323,7 @@ static void parse_typedef(void) {
     if (tok == start && start->kind == TK_IDENT && find_typedef(start->name))
       error_at(tok->loc, "typedef name required");
     t = declarator(t, &name);
+    skip_attribute();
     if (!name)
       error_at(tok->loc, "typedef name required");
     register_typedef(name, t);
@@ -1283,6 +1363,7 @@ static Node *parse_declaration(void) {
   for (;;) {
     Type *t;
     Node *n = parse_declarator(base, &t);
+    skip_attribute();
     n->is_static = is_static;
     n->is_extern = is_extern;
     if (!n->name && n->kind == ND_DECL) {

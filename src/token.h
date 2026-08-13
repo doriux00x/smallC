@@ -29,6 +29,9 @@ struct Token {
   double fval;   /* TK_NUM float value */
   char *loc;     /* start of token in source buffer */
   int len;       /* byte length of token text */
+  int line;      /* 1-based source line (for __LINE__ and errors) */
+  int at_bol;    /* first token on its line (directive detection) */
+  int space;     /* whitespace or comment before this token */
   char *name;    /* allocated copy, TK_IDENT only */
   char *str;     /* decoded string, TK_STR only */
   int str_len;

@@ -1,8 +1,7 @@
 #include "ast.h"
 #include "util.h"
 
-#include <stdlib.h>
-#include <string.h>
+#include "libc.h"
 
 /* zeroed, so base/ret/params never hold garbage the walkers might chase */
 static Type *type_zalloc(void) {

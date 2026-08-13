@@ -1,13 +1,11 @@
 #include "ast.h"
 #include "codegen.h"
 #include "parser.h"
+#include "preproc.h"
 #include "token.h"
 #include "util.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
+#include "libc.h"
 
 static void dump_type(Type *t) {
   static Type *dumping;   /* chain of types being printed, to break
@@ -300,7 +298,7 @@ static void dump_stmt(Node *n, int d) {
 
 static void usage(void) {
   fprintf(stderr, "usage: smallcc [-a|-t] <file.c>\n");
-  fprintf(stderr, "       smallcc <file.c>...   each compiles to build/<base>.s\n");
+  fprintf(stderr, "       smallcc [-I dir]... <file.c>...   each compiles to build/<base>.s\n");
   exit(1);
 }
 
@@ -321,7 +319,7 @@ static char *out_base(char *path) {
  * so several files in one run are exactly several separate runs */
 static void compile_file(char *path) {
   g_src = read_file(path);
-  Token *toks = tokenize(g_src);
+  Token *toks = preprocess(tokenize(g_src), path);
   Node *root = parse(toks);
   resolve(root);
   char *outpath = out_base(path);
@@ -346,14 +344,21 @@ int main(int argc, char **argv) {
   }
 
   if (mode == MODE_COMPILE) {
-    for (int i = 1; i < argc; i++)
-      compile_file(argv[i]);
+    for (int i = 1; i < argc; i++) {
+      if (strncmp(argv[i], "-I", 2) == 0) {
+        char *dir = argv[i] + 2;
+        if (!*dir && i + 1 < argc)
+          dir = argv[++i];
+        add_include_dir(dir);
+      } else {
+        compile_file(argv[i]);
+      }
+    }
     return 0;
   }
 
   g_src = read_file(path);
-
-  Token *toks = tokenize(g_src);
+  Token *toks = preprocess(tokenize(g_src), path);
 
   if (mode == MODE_DUMP_TOKENS) {
     for (Token *t = toks; t; t = t->next) {

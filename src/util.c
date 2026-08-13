@@ -46,11 +46,32 @@ void error(char *fmt, ...) {
   exit(1);
 }
 
+/* every file the compiler reads registers its buffer here, so
+ * error_at can find the source line for a token from any file
+ * (the preprocessor splices together several files) */
+typedef struct FileBuf FileBuf;
+struct FileBuf {
+  char *buf;
+  size_t len;
+  FileBuf *next;
+};
+
+static FileBuf *filebufs;
+
 // points at the offending token, prints the source line and a caret
 void error_at(char *loc, char *fmt, ...) {
+  char *buf = NULL;
+  for (FileBuf *fb = filebufs; fb; fb = fb->next)
+    if (fb->buf <= loc && loc < fb->buf + fb->len) {
+      buf = fb->buf;
+      break;
+    }
+  if (!buf)
+    buf = g_src;
+
   int line = 1;
-  char *line_start = g_src;
-  for (char *p = g_src; p < loc; p++) {
+  char *line_start = buf;
+  for (char *p = buf; p < loc && *p; p++) {
     if (*p == '\n') {
       line++;
       line_start = p + 1;
@@ -90,5 +111,11 @@ char *read_file(char *path) {
   // two NULs so the lexer can safely do 2-char lookahead at EOF
   buf[sz] = '\0';
   buf[sz + 1] = '\0';
+
+  FileBuf *fb = xmalloc(sizeof(FileBuf));
+  fb->buf = buf;
+  fb->len = sz;
+  fb->next = filebufs;
+  filebufs = fb;
   return buf;
 }

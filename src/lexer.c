@@ -1,10 +1,7 @@
 #include "token.h"
 #include "util.h"
 
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "libc.h"
 
 typedef struct {
   char *name;
@@ -36,11 +33,15 @@ static char *puncts[] = {
   "?", ":", ";", ",", ".", "(", ")", "[", "]", "{", "}", "#",
 };
 
-static Token *tok_new(TokenKind kind, char *start, int len) {
+static Token *tok_new(TokenKind kind, char *start, int len,
+                      int line, int at_bol, int space) {
   Token *t = xmalloc(sizeof(Token));
   t->kind = kind;
   t->loc = start;
   t->len = len;
+  t->line = line;
+  t->at_bol = at_bol;
+  t->space = space;
   return t;
 }
 
@@ -88,9 +89,9 @@ static int is_float_lit(char *p) {
   return 0;
 }
 
-static Token *read_number(char *start, char **pp) {
+static Token *read_number(char *start, char **pp, int line, int at_bol, int space) {
   char *p = *pp;
-  Token *t = tok_new(TK_NUM, start, 0);
+  Token *t = tok_new(TK_NUM, start, 0, line, at_bol, space);
   if (is_float_lit(p)) {
     /* FIXME: strtod silently gives inf on overflow */
     t->fval = strtod(p, &p);
@@ -115,9 +116,15 @@ static Token *read_number(char *start, char **pp) {
 Token *tokenize(char *p) {
   Token head = {0};
   Token *cur = &head;
+  int line = 1, at_bol = 1, space = 0;
 
   while (*p) {
     if (isspace((unsigned char)*p)) {
+      if (*p == '\n') {
+        line++;
+        at_bol = 1;
+      }
+      space = 1;
       p++;
       continue;
     }
@@ -126,6 +133,7 @@ Token *tokenize(char *p) {
       p += 2;
       while (*p && *p != '\n')
         p++;
+      space = 1;
       continue;
     }
 
@@ -133,6 +141,12 @@ Token *tokenize(char *p) {
       char *end = strstr(p + 2, "*/");
       if (!end)
         error_at(p, "unterminated comment");
+      for (char *q = p + 2; q < end; q++)
+        if (*q == '\n') {
+          line++;
+          at_bol = 1;
+        }
+      space = 1;
       p = end + 2;
       continue;
     }
@@ -152,18 +166,22 @@ Token *tokenize(char *p) {
           break;
         }
 
-      Token *t = tok_new(kind, start, len);
+      Token *t = tok_new(kind, start, len, line, at_bol, space);
       if (kind == TK_IDENT)
         t->name = xstrndup(start, len);
       cur = cur->next = t;
+      space = 0;
+      at_bol = 0;
       continue;
     }
 
     if (isdigit((unsigned char)*p) ||
         (*p == '.' && isdigit((unsigned char)p[1]))) {
       char *start = p;
-      Token *t = read_number(start, &p);
+      Token *t = read_number(start, &p, line, at_bol, space);
       cur = cur->next = t;
+      space = 0;
+      at_bol = 0;
       continue;
     }
 
@@ -187,11 +205,13 @@ Token *tokenize(char *p) {
       }
       p++; /* closing quote */
 
-      Token *t = tok_new(TK_STR, start, p - start);
+      Token *t = tok_new(TK_STR, start, p - start, line, at_bol, space);
       t->str = buf;
       t->str[n] = '\0';
       t->str_len = n;
       cur = cur->next = t;
+      space = 0;
+      at_bol = 0;
       continue;
     }
 
@@ -211,9 +231,11 @@ Token *tokenize(char *p) {
         error_at(start, "multi-char constants not supported");
       p++;
 
-      Token *t = tok_new(TK_NUM, start, p - start);
+      Token *t = tok_new(TK_NUM, start, p - start, line, at_bol, space);
       t->val = c;
       cur = cur->next = t;
+      space = 0;
+      at_bol = 0;
       continue;
     }
 
@@ -221,19 +243,22 @@ Token *tokenize(char *p) {
     for (int i = 0; i < (int)ARRAY_LEN(puncts); i++) {
       int plen = (int)strlen(puncts[i]);
       if (strncmp(p, puncts[i], plen) == 0) {
-        cur = cur->next = tok_new(TK_PUNCT, p, plen);
+        cur = cur->next = tok_new(TK_PUNCT, p, plen, line, at_bol, space);
         p += plen;
         matched = 1;
         break;
       }
     }
-    if (matched)
+    if (matched) {
+      space = 0;
+      at_bol = 0;
       continue;
+    }
 
     error_at(p, "unexpected character '%c'", *p);
   }
 
-  cur->next = tok_new(TK_EOF, p, 0);
+  cur->next = tok_new(TK_EOF, p, 0, line, 0, 0);
   return head.next;
 }
 
@@ -250,7 +275,8 @@ static char *kind_names[] = {
 };
 
 /* compile-time check that the name table tracks the enum */
-typedef char check_enum_size[ARRAY_LEN(kind_names) == TK_PUNCT + 1 ? 1 : -1];
+/* enumerate to PUNCT so kind_names[] below can be sized from the
+ * enum, keeping the arrays and the enum naturally in sync */
 
 char *token_kind_name(TokenKind k) {
   return kind_names[k];

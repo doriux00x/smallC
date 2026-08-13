@@ -4,9 +4,7 @@
 #include "token.h"
 #include "util.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "libc.h"
 
 /* x86-64 SysV ABI, AT&T syntax.
  *
@@ -28,7 +26,8 @@ typedef struct Scope Scope;
 
 struct Obj {
   Obj *next;
-  char *name;
+  char *name;          /* source identifier, used for scope lookup */
+  char *symname;       /* emitted symbol, NULL unless mangled */
   Type *type;
   int offset;          /* rbp-relative slot for locals/params */
   int frame;           /* function: total frame size */
@@ -53,6 +52,11 @@ static FILE *out;
 static int brk_labels[64], cont_labels[64];
 static int brk_n, cont_n;
 static int ret_label;
+
+/* function-local statics collected during resolve; codegen emits them
+ * like globals after the text section */
+static Node **static_decls;
+static int static_decls_n, static_decls_cap;
 
 /* constant expression support, used by resolve_stmt (case labels)
  * and gen_data (global initializers) */
@@ -612,8 +616,12 @@ static Node *init_fill(Type *ty, int off, Node *es) {
     init_add(ty, off, NULL);   /* zero */
     return NULL;
   }
-  if (es->kind == ND_STR)
-    error("invalid string initializer");
+  if (es->kind == ND_STR) {
+    /* a string only fills char arrays (handled above) and char
+     * pointers, where it means the address of the literal */
+    if (ty->kind != TY_PTR)
+      error("invalid string initializer");
+  }
   init_add(ty, off, es);
   return es->next;
 }
@@ -653,9 +661,14 @@ static void resolve_initializer(Node *n) {
 
   init_leaf_n = 0;
   if (n->init->kind == ND_STR) {
-    if (ty->kind != TY_ARRAY || ty->base->kind != TY_CHAR)
+    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR) {
+      init_fill_members(ty, 0, n->init);
+    } else if (ty->kind == TY_PTR) {
+      /* "char *p = \"x\";" is the address of the literal */
+      init_fill(ty, 0, n->init);
+    } else {
       error("invalid string initializer");
-    init_fill_members(ty, 0, n->init);
+    }
   } else {
     init_fill(ty, 0, n->init);
   }
@@ -784,7 +797,7 @@ static void resolve_stmt(Node *n) {
     case ND_GOTO:
       return;
     case ND_DECL: {
-      if (n->is_static || n->is_extern)
+      if (n->is_extern)
         error("storage class on a local variable, unsupported");
       check_type_supported(n->type);
       if (n->type->kind == TY_VOID)
@@ -807,9 +820,27 @@ static void resolve_stmt(Node *n) {
         }
       }
       Obj *o = new_obj(n->name, n->type);
-      o->is_local = 1;
-      cur_offset -= roundup(o->type->size, 8);
-      o->offset = cur_offset;
+      if (n->is_static) {
+        /* a function-local static is a data symbol like a global; the
+         * name gets mangled so the same identifier in two functions
+         * doesn't collide. the initializer (resolved above) lands in
+         * .data/.bss through gen_data at codegen time, not in a stack
+         * slot */
+        char *mn = xmalloc(9 + strlen(n->name) + 1);
+        sprintf(mn, "static%d_%s", static_decls_n, n->name);
+        o->symname = mn;
+        o->is_local = 0;
+        if (static_decls_n == static_decls_cap) {
+          static_decls_cap = static_decls_cap ? static_decls_cap * 2 : 16;
+          static_decls = xrealloc(static_decls,
+                                  sizeof(Node *) * static_decls_cap);
+        }
+        static_decls[static_decls_n++] = n;
+      } else {
+        o->is_local = 1;
+        cur_offset -= roundup(o->type->size, 8);
+        o->offset = cur_offset;
+      }
       push_var(o);
       n->var = o;
       return;
@@ -892,6 +923,7 @@ void resolve(Node *prog) {
   base_scope.next = NULL;
   base_scope.vars = NULL;
   labeln = 0;
+  static_decls_n = 0;
 
   /* pass 1: every global and function goes into the base scope up
    * front, so references work in any declaration order */
@@ -1118,7 +1150,7 @@ static void gen_addr(Node *n) {
       if (o->is_local)
         fprintf(out, "  lea %d(%%rbp), %%rax\n", o->offset);
       else
-        fprintf(out, "  lea %s(%%rip), %%rax\n", o->name);
+        fprintf(out, "  lea %s(%%rip), %%rax\n", o->symname ? o->symname : o->name);
       return;
     }
     case ND_INDEX: {
@@ -1273,7 +1305,8 @@ static void emit_combine(int op, Type *lhs_ty, Type *rhs_ty) {
       return;
     case OP_LOGAND:
     case OP_LOGOR: {
-      /* no short-circuiting, results are normalized 0/1 */
+      /* short-circuiting is handled in gen_bin; this path just
+       * normalizes the values to 0/1 and combines them */
       fprintf(out, "  cmp $0, %%rdi\n");
       fprintf(out, "  setne %%dl\n");
       fprintf(out, "  movzbq %%dl, %%rdx\n");
@@ -1471,7 +1504,7 @@ static void gen_expr(Node *n) {
       return;
     case ND_STR:
       emit_string(n);
-      fprintf(out, "  lea %s(%%rip), %%rax\n", n->var->name);
+      fprintf(out, "  lea %s(%%rip), %%rax\n", n->var->symname ? n->var->symname : n->var->name);
       return;
     case ND_VAR:
       gen_addr(n);
@@ -1540,6 +1573,34 @@ static void gen_expr(Node *n) {
       return;
     }
     case ND_BIN:
+      if (n->op == OP_LOGAND || n->op == OP_LOGOR) {
+        /* short-circuit: && skips the rhs when the lhs is 0, ||
+         * when it's 1; the result is normalized to 0/1 */
+        int lz = labeln++;
+        int le = labeln++;
+        gen_expr(n->lhs);
+        if (n->op == OP_LOGAND) {
+          fprintf(out, "  cmp $0, %%rax\n");
+          fprintf(out, "  je .L%d\n", lz);
+          gen_expr(n->rhs);
+          fprintf(out, "  cmp $0, %%rax\n");
+          fprintf(out, "  setne %%al\n");
+          fprintf(out, "  movzbq %%al, %%rax\n");
+          fprintf(out, "  jmp .L%d\n", le);
+          fprintf(out, ".L%d:\n", lz);
+          fprintf(out, "  mov $0, %%rax\n");
+          fprintf(out, ".L%d:\n", le);
+        } else {
+          fprintf(out, "  cmp $0, %%rax\n");
+          fprintf(out, "  jne .L%d\n", le);
+          gen_expr(n->rhs);
+          fprintf(out, "  cmp $0, %%rax\n");
+          fprintf(out, "  setne %%al\n");
+          fprintf(out, "  movzbq %%al, %%rax\n");
+          fprintf(out, ".L%d:\n", le);
+        }
+        return;
+      }
       gen_expr(n->rhs);
       if (is_real(n->lhs->type) || is_real(n->rhs->type)) {
         /* the rhs has to survive the lhs evaluation, which may itself
@@ -1574,6 +1635,29 @@ static void gen_expr(Node *n) {
         fprintf(out, "  cvttsd2si %%xmm0, %%rax\n");
       else if (is_real(n->targ))
         fprintf(out, "  cvtsi2sd %%rax, %%xmm0\n");
+      if (!is_real(n->targ) && !is_real(n->lhs->type)) {
+        /* integer casts: narrow or re-sign the value in %rax. the
+         * memory loads sign-extend, so an unsigned target has to be
+         * zero-extended and a narrowing target re-trimmed */
+        int tosz = n->targ->size;
+        int frsz = n->lhs->type->size;
+        if (n->targ->is_unsigned && (!n->lhs->type->is_unsigned ||
+                                     tosz < frsz)) {
+          if (tosz == 1)
+            fprintf(out, "  movzbq %%al, %%rax\n");
+          else if (tosz == 2)
+            fprintf(out, "  movzwq %%ax, %%rax\n");
+          else if (tosz == 4)
+            fprintf(out, "  mov %%eax, %%eax\n");
+        } else if (!n->targ->is_unsigned && tosz < frsz) {
+          if (tosz == 1)
+            fprintf(out, "  movsbq %%al, %%rax\n");
+          else if (tosz == 2)
+            fprintf(out, "  movswq %%ax, %%rax\n");
+          else if (tosz == 4)
+            fprintf(out, "  movslq %%eax, %%rax\n");
+        }
+      }
       if (n->targ->is_bool) {
         /* real sources hit cvtt*2si above, so the int result is in
          * %rax; collapse it to 0/1 */
@@ -1811,8 +1895,8 @@ static void gen_stmt(Node *n) {
       return;
     case ND_DECL:
       /* C says uninitialized locals are garbage, so only the init
-       * produces code */
-      if (n->init) {
+       * produces code; a static's init already landed in .data/.bss */
+      if (n->init && !n->is_static) {
         if (n->inits) {
           /* brace initializer: one store per flattened leaf */
           for (int i = 0; i < n->init_n; i++) {
@@ -2124,17 +2208,22 @@ static void gen_data(Node *n) {
    * storage at all (the symbol is expected elsewhere at link time) */
   if (n->is_extern)
     return;
+  char *sym = n->var ? (n->var->symname ? n->var->symname
+                                        : n->var->name) : n->name;
   int exported = !n->is_static;
   if (n->inits) {
     /* brace initializer: one directive per leaf, .zero for the gaps
      * (struct members can have padding between them) and the tail */
     section(".data");
     if (exported)
-      fprintf(out, "  .globl %s\n", n->name);
-    fprintf(out, "%s:\n", n->name);
+      fprintf(out, "  .globl %s\n", sym);
+    fprintf(out, "%s:\n", sym);
     int off = 0;
     for (int i = 0; i < n->init_n; i++) {
       Init *it = &n->inits[i];
+      /* emit_string hops to .rodata and back to .text; the fields
+       * themselves must stay in .data */
+      section(".data");
       if (it->offset > off)
         fprintf(out, "  .zero %d\n", it->offset - off);
       if (!it->expr) {
@@ -2151,6 +2240,17 @@ static void gen_data(Node *n) {
         unsigned bits;
         memcpy(&bits, &f, 4);
         fprintf(out, "  .long 0x%x\n", bits);
+      } else if (it->expr->kind == ND_STR) {
+        /* a pointer slot fed by a string literal: the address */
+        emit_string(it->expr);
+        section(".data");
+        fprintf(out, "  .quad %s\n", it->expr->var->name);
+      } else if (it->expr->kind == ND_UNARY && it->expr->op == '&') {
+        /* the address of a global is a link-time constant */
+        Obj *tgt = it->expr->lhs->var;
+        section(".data");
+        fprintf(out, "  .quad %s\n",
+                tgt->symname ? tgt->symname : tgt->name);
       } else {
         CVal v = const_fold(it->expr);
         int ival = v.is_float ? (int)v.fval : v.val;
@@ -2164,8 +2264,10 @@ static void gen_data(Node *n) {
       }
       off = it->offset + it->ty->size;
     }
-    if (off < type_size(n->type))
+    if (off < type_size(n->type)) {
+      section(".data");
       fprintf(out, "  .zero %d\n", type_size(n->type) - off);
+    }
     return;
   }
   if (n->init->kind == ND_STR) {
@@ -2173,16 +2275,26 @@ static void gen_data(Node *n) {
     emit_string(n->init);
     section(".data");
     if (exported)
-      fprintf(out, "  .globl %s\n", n->name);
-    fprintf(out, "%s:\n", n->name);
+      fprintf(out, "  .globl %s\n", sym);
+    fprintf(out, "%s:\n", sym);
     fprintf(out, "  .quad %s\n", n->init->var->name);
+    return;
+  }
+  if (n->init->kind == ND_UNARY && n->init->op == '&') {
+    /* the address of a global is a link-time constant */
+    section(".data");
+    if (exported)
+      fprintf(out, "  .globl %s\n", sym);
+    fprintf(out, "%s:\n", sym);
+    Obj *tgt = n->init->lhs->var;
+    fprintf(out, "  .quad %s\n", tgt->symname ? tgt->symname : tgt->name);
     return;
   }
   CVal v = const_fold(n->init);
   section(".data");
   if (exported)
-    fprintf(out, "  .globl %s\n", n->name);
-  fprintf(out, "%s:\n", n->name);
+    fprintf(out, "  .globl %s\n", sym);
+  fprintf(out, "%s:\n", sym);
   if (n->type->kind == TY_DOUBLE) {
     double d = v.is_float ? v.fval : (double)v.val;
     unsigned long long bits;
@@ -2347,6 +2459,17 @@ void codegen(Node *prog, char *outpath) {
         fprintf(out, "%s:\n", n->name);
         fprintf(out, "  .zero %d\n", type_size(n->type));
       }
+    }
+  }
+
+  for (int i = 0; i < static_decls_n; i++) {
+    Node *s = static_decls[i];
+    if (s->init)
+      gen_data(s);
+    else {
+      section(".bss");
+      fprintf(out, "%s:\n", s->var->symname);
+      fprintf(out, "  .zero %d\n", type_size(s->type));
     }
   }
 

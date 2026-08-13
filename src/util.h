@@ -1,7 +1,7 @@
 #ifndef UTIL_H
 #define UTIL_H
 
-#include <stddef.h>
+#include "libc.h"
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
