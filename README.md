@@ -15,9 +15,16 @@ The language subset grows all the time. As of now it handles:
 
 - Integers: char, short, int, long, with signed and unsigned
 - _Bool, with proper semantics: any nonzero value stored into one
-  becomes 1, so `_Bool b = 7;` gives you a 1. There is no
-  preprocessor, so the `bool`, `true` and `false` macros from
-  <stdbool.h> are not available; write `_Bool` and use 0/1.
+  becomes 1, so `_Bool b = 7;` gives you a 1. `bool`, `true` and
+  `false` are not built in; `#define bool _Bool` and so on if you
+  want them.
+- A small preprocessor: object-like and function-like `#define` and
+  `#undef`, `#include` in "..." (resolved against the including
+  file's directory) and <...> form with `-I` search paths, and
+  `#if` / `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif`
+  with constant expressions, `defined()`, and the dynamic macros
+  `__LINE__`, `__FILE__`, `__COUNTER__`, `__STDC__`,
+  `__STDC_VERSION__`.
 - Floating point: float and double, with SSE codegen
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
@@ -55,9 +62,14 @@ self-written C compiled by your system compiler.
 
 Known gaps, in no particular order:
 
-- No preprocessor. There is no `#include` and no `#define`. To call
-  libc functions you declare your own prototypes, as the tests do.
 - No variadic functions, no VLA, no compound literals.
+- Very small preprocessor: object-like and function-like `#define`
+  (no stringize or paste), `#include` in quote and <...> form with
+  `-I` search paths, and `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/
+  `#endif` with constant expressions and `defined()`. But no line
+  continuation, no `#pragma` handling beyond skipping, and the
+  standard headers are not shipped; declare the few libc functions
+  you use by hand, as the tests do.
 - Only 64-bit x86 (System V ABI, Linux/ELF). No Windows, no ARM,
   no 32-bit.
 - Global float/double initializers must be constant expressions,

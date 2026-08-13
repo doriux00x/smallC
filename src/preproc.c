@@ -190,6 +190,15 @@ static Token *builtin_macro(Token *t) {
   return NULL;
 }
 
+/* the dynamic macros count as defined for #ifdef/#ifndef/defined(),
+ * even though they live outside the macro table */
+static int builtin_name(char *s) {
+  return strcmp(s, "__LINE__") == 0 || strcmp(s, "__FILE__") == 0 ||
+         strcmp(s, "__COUNTER__") == 0 || strcmp(s, "__STDC__") == 0 ||
+         strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__x86_64__") == 0 ||
+         strcmp(s, "__linux__") == 0;
+}
+
 /* -------- #if expression evaluator --------
  * constants only: integer literals, defined(X), arithmetic and
  * comparison operators, and parentheses. identifiers that are
@@ -232,7 +241,7 @@ static long eval_primary(Token **pp) {
         n = n->next;
       if (n->kind != TK_IDENT)
         error_at(n->loc, "expected macro name after defined");
-      long v = find_macro(n->name) != NULL;
+      long v = (find_macro(n->name) != NULL) || builtin_name(n->name);
       n = n->next;
       if (paren && !is_punct(n, ')'))
         error_at(n->loc, "expected ')' after defined");
@@ -255,6 +264,20 @@ static long eval_primary(Token **pp) {
         *pp = t->next;
         return m2->body->val;
       }
+    }
+    /* a builtin macro's value */
+    if (builtin_name(t->name)) {
+      long bv = 0;
+      if (strcmp(t->name, "__STDC__") == 0)
+        bv = 1;
+      else if (strcmp(t->name, "__STDC_VERSION__") == 0)
+        bv = 199901;
+      else if (strcmp(t->name, "__LINE__") == 0)
+        bv = t->line;
+      else if (strcmp(t->name, "__COUNTER__") == 0)
+        bv = counter++;
+      *pp = t->next;
+      return bv;
     }
     *pp = t->next;
     return 0;
@@ -532,13 +555,15 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     c->parent_active = active;
     c->active = active && v;
     c->ever_on = c->active;
+    c->seen_else = 0;
     *pp = skip_line(&name->next);
     return;
   }
 
   if (directive_is(name, "ifdef") || directive_is(name, "ifndef")) {
     Token *n = name->next;
-    int defined = (n->kind == TK_IDENT && find_macro(n->name)) != 0;
+    int defined = (n->kind == TK_IDENT &&
+                  (find_macro(n->name) || builtin_name(n->name))) != 0;
     int v = directive_is(name, "ifdef") ? defined : !defined;
     if (cond_n >= MAX_COND_DEPTH)
       error_at(t->loc, "#if nested too deep");
@@ -546,6 +571,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     c->parent_active = active;
     c->active = active && v;
     c->ever_on = c->active;
+    c->seen_else = 0;
     *pp = skip_line(&n->next);
     return;
   }
@@ -556,7 +582,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     Cond *c = &conds[cond_n - 1];
     if (c->ever_on)
       error_at(t->loc, "#elif after a taken branch");
-    long v = active ? eval_if_expr(name->next) : 0;
+    long v = c->parent_active ? eval_if_expr(name->next) : 0;
     int branch = c->parent_active && v;
     c->active = branch;
     c->ever_on = branch;
