@@ -32,6 +32,7 @@ test: $(BIN)
 	./$(BIN) -a tests/volatile.c
 	./$(BIN) -a tests/register.c
 	./$(BIN) -a tests/float.c
+	./$(BIN) -a tests/runmulti1.c tests/runmulti2.c
 	./$(BIN) -t tests/lexer.c
 	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct runfloat runinit runswitch runtypedef runenum rununion runconst runstatic rungoto runbool runvolatile runregister runpreproc runstdarg runclit rundesig runbit; do \
 	  echo "== $$t =="; \

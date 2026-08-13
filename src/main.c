@@ -354,10 +354,10 @@ int main(int argc, char **argv) {
   enum { MODE_COMPILE, MODE_DUMP_AST, MODE_DUMP_TOKENS } mode = MODE_COMPILE;
   char *path;
 
-  if (argc == 3 && strcmp(argv[1], "-a") == 0) {
+  if (argc >= 3 && strcmp(argv[1], "-a") == 0) {
     mode = MODE_DUMP_AST;
     path = argv[2];
-  } else if (argc == 3 && strcmp(argv[1], "-t") == 0) {
+  } else if (argc >= 3 && strcmp(argv[1], "-t") == 0) {
     mode = MODE_DUMP_TOKENS;
     path = argv[2];
   } else if (argc >= 2) {
