@@ -187,6 +187,12 @@ static void resolve_bin(Node *n) {
   resolve_expr(n->lhs);
   resolve_expr(n->rhs);
 
+  if (n->op == ',') {
+    /* both sides evaluated in order; the value is the right one */
+    n->type = n->rhs->type;
+    return;
+  }
+
   Type *l = n->lhs->type;
   Type *r = n->rhs->type;
 
@@ -1890,6 +1896,12 @@ static void gen_expr(Node *n) {
           fprintf(out, "  movzbq %%al, %%rax\n");
           fprintf(out, ".L%d:\n", le);
         }
+        return;
+      }
+      if (n->op == ',') {
+        /* evaluate the left side for its effects, keep the right */
+        gen_expr(n->lhs);
+        gen_expr(n->rhs);
         return;
       }
       gen_expr(n->rhs);

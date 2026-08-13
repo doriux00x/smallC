@@ -93,6 +93,7 @@ static Tag *tags;
 static Type *parse_typespec(void);
 static Type *declarator(Type *base, char **name);
 static Node *parse_expr(void);
+static Node *parse_assign(void);
 
 static Type *find_tag(char *name) {
   for (Tag *t = tags; t; t = t->next)
@@ -286,7 +287,7 @@ static void parse_enumerators(void) {
   for (;;) {
     char *name = expect_ident("enumerator")->name;
     if (consume_punct("="))
-      value = eval_const(parse_expr());
+      value = eval_const(parse_assign());
     register_enum_const(name, value++);
     if (!consume_punct(","))
       break;
@@ -314,7 +315,7 @@ static Member *parse_struct_members(void) {
       if (consume_punct(":")) {
         /* a bit-field; the width is an integer constant expression.
          * zero width is the anonymous alignment marker */
-        Node *w = parse_expr();
+        Node *w = parse_assign();
         if (!is_const_expr(w))
           error_at(tok->loc, "bit-field width must be a constant expression");
         CVal cv = const_fold(w);
@@ -600,7 +601,12 @@ static Node *parse_primary(void);
 static Node *parse_initializer(void);
 
 static Node *parse_expr(void) {
-  return parse_assign();
+  /* the comma operator: lowest precedence, left assoc, sequence
+   * point, the value is the right operand */
+  Node *node = parse_assign();
+  while (consume_punct(","))
+    node = new_binary(',', node, parse_assign());
+  return node;
 }
 
 static Node *parse_assign(void) {
@@ -1134,7 +1140,7 @@ static Node *parse_stmt(void) {
     if (!nswitch)
       error_at(tok->loc, "case label outside a switch");
     Node *n = node_new(ND_CASE);
-    n->lhs = parse_expr();
+    n->lhs = parse_assign();
     expect_punct(":");
     n->body = parse_stmt();
     return n;
@@ -1352,7 +1358,7 @@ static Type *suffix_loop(Type *t) {
         /* an arbitrary constant expression: "int a[ARRAY_LEN(b) == 3 ?
          * 1 : -1];" parses like any primary expression, folds to an
          * integer, and is discarded (checked at parse time only) */
-        len = (int)eval_const(parse_expr());
+        len = eval_const(parse_assign());
       }
       expect_punct("]");
       if (dim_n < 64)
@@ -1450,7 +1456,7 @@ static Node *parse_init_elem(void) {
       tok = tok->next;
       Node *d = node_new(ND_DESIG);
       d->name = NULL;
-      d->lhs = parse_expr();
+      d->lhs = parse_assign();
       expect_punct("]");
       *tail = d;
       tail = &d->then;

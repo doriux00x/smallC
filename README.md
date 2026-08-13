@@ -67,7 +67,8 @@ The language subset grows all the time. As of now it handles:
   calling convention
 - The usual operators: arithmetic, comparisons with automatic
   promotion, logical, bitwise, casts, sizeof, assignment operators,
-  ++/--, ternary, member access `.` and `->`, indexing
+  ++/--, ternary, the comma operator with its sequence point, member
+  access `.` and `->`, indexing
 
 Nothing in the compiler is generated or bootstrapped; it is
 self-written C compiled by your system compiler.

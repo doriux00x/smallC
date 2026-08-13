@@ -34,7 +34,7 @@ test: $(BIN)
 	./$(BIN) -a tests/float.c
 	./$(BIN) -a tests/runmulti1.c tests/runmulti2.c
 	./$(BIN) -t tests/lexer.c
-	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct runfloat runinit runswitch runtypedef runenum rununion runconst runstatic rungoto runbool runvolatile runregister runpreproc runstdarg runclit rundesig runbit; do \
+	@set -e; for t in run1 run2 run3 run4 run5 runfptr runstruct runfloat runinit runswitch runtypedef runenum rununion runconst runstatic rungoto runbool runvolatile runregister runpreproc runstdarg runclit rundesig runbit runcomma; do \
 	  echo "== $$t =="; \
 	  ./$(BIN) tests/$$t.c; \
 	  $(CC) $(CFLAGS) -o $(OBJDIR)/$$t $(OBJDIR)/$$t.s; \

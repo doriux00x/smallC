@@ -116,6 +116,7 @@ static const char *op_name(int op) {
     case '<': return "<";
     case '>': return ">";
     case '=': return "=";
+    case ',': return ",";
   }
   return "?";
 }
