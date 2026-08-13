@@ -1,9 +1,10 @@
 /* preprocessor: object-like and function-like macros, #if/#ifdef/
  * #ifndef/#elif/#else/#endif with constant expressions and defined(),
  * #undef, quote-form #include resolved against the including file's
- * directory, and the dynamic macros __LINE__/__FILE__/__COUNTER__/
- * __STDC__. every check adds 1 to the counter; the fail branches add
- * 1000 so any mis-evaluated conditional blows the total. */
+ * directory, # stringize, ## token paste, backslash-newline splicing,
+ * and the dynamic macros __LINE__/__FILE__/__COUNTER__/__STDC__.
+ * every check adds 1 to the counter; the fail branches add 1000 so
+ * any mis-evaluated conditional blows the total. */
 
 #include "inc/preproc.h"
 
@@ -128,7 +129,39 @@ int main(void) {
   check += (__STDC_VERSION__ >= 199901);
   check += (strcmp(__FILE__, "tests/runpreproc.c") == 0);
 
-  if (check != 26)
+  /* stringize: #x is the argument's spelling as a string */
+#define STR(x) #x
+  check += (strcmp(STR(hello), "hello") == 0);
+  check += (strcmp(STR(1 + 2), "1 + 2") == 0);
+  check += (strcmp(STR("q"), "\"q\"") == 0);
+  check += (strcmp(STR('\n'), "'\\n'") == 0);
+
+  /* token paste: the boundary tokens fuse, parameters used raw */
+#define CAT(a, b) a ## b
+#define GLUE(pre, n) CAT(pre, n)
+#define CHAIN(a, b, c) a ## b ## c
+#define FOO_1 7
+  int pa = 5;
+  int pa_x = 7;
+  int pax = 9;
+  check += (CAT(12, 34) == 1234);
+  check += (GLUE(pa, _x) == 7);      /* param substituted before CAT runs */
+  check += (CHAIN(pa, x, ) == 9);    /* chained pastes, empty tail arg */
+  check += (CAT(, 3) == 3);          /* empty left operand */
+  check += (CAT(4, ) == 4);          /* empty right operand */
+  check += (CAT(FOO_, 1) == 7);      /* pasted name is rescanned, expands */
+
+  /* backslash-newline splicing joins lines before tokenizing */
+  check += (1 + \
+2 == 3);
+#define CONT(x) (x) + \
+  (x)
+  check += (CONT(5) == 10);
+  char *twolines = "fo\
+o";
+  check += (strcmp(twolines, "foo") == 0);
+
+  if (check != 39)
     return check;
   printf("runpreproc ok\n");
   return 0;

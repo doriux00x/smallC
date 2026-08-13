@@ -29,6 +29,7 @@ static char *puncts[] = {
   "<<=", ">>=", "...",
   "==", "!=", "<=", ">=", "&&", "||", "->", "++", "--",
   "+=", "-=", "*=", "/=", "%=", "<<", ">>", "&=", "|=", "^=",
+  "##",
   "<", ">", "=", "+", "-", "*", "/", "%", "&", "|", "^", "~", "!",
   "?", ":", ";", ",", ".", "(", ")", "[", "]", "{", "}", "#",
 };
@@ -122,6 +123,15 @@ Token *tokenize(char *p) {
   int line = 1, at_bol = 1, space = 0;
 
   while (*p) {
+    /* backslash-newline splicing: the pair is deleted before
+     * tokenizing, so it joins tokens and never becomes whitespace;
+     * the physical newline still counts toward line numbers */
+    if (*p == '\\' && p[1] == '\n') {
+      p += 2;
+      line++;
+      continue;
+    }
+
     if (isspace((unsigned char)*p)) {
       if (*p == '\n') {
         line++;
@@ -135,7 +145,12 @@ Token *tokenize(char *p) {
     if (strncmp(p, "//", 2) == 0) {
       p += 2;
       while (*p && *p != '\n')
-        p++;
+        if (*p == '\\' && p[1] == '\n') {
+          p += 2;
+          line++;
+        } else {
+          p++;
+        }
       space = 1;
       continue;
     }
@@ -196,6 +211,11 @@ Token *tokenize(char *p) {
       while (*p != '"') {
         if (*p == '\0' || *p == '\n')
           error_at(start, "unterminated string literal");
+        if (*p == '\\' && p[1] == '\n') {
+          p += 2;
+          line++;
+          continue;
+        }
         if (n + 1 == cap) {
           cap *= 2;
           buf = xrealloc(buf, cap);
@@ -221,6 +241,10 @@ Token *tokenize(char *p) {
     if (*p == '\'') {
       char *start = p;
       p++;
+      if (*p == '\\' && p[1] == '\n') {
+        p += 2;
+        line++;
+      }
       if (*p == '\0' || *p == '\n' || *p == '\'')
         error_at(start, "empty char literal");
       int c;

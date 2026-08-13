@@ -4,16 +4,16 @@
 
 #include "libc.h"
 
-/* a bare-bones preprocessor: #define (object- and function-like),
- * #undef, #include ("..." resolves against the including file's
- * directory and the -I dirs, "<...>" against the -I dirs only),
- * #ifdef/#ifndef/#if (constant integer expressions, the defined
- * operator, and constants that are single-token macros), #elif,
- * #else, #endif, and the dynamic macros __LINE__, __FILE__,
- * __COUNTER__, __STDC__, __STDC_VERSION__, __x86_64__, __linux__.
+/* a bare-bones preprocessor: #define (object- and function-like,
+ * with # stringize and ## token paste), #undef, #include ("..."
+ * resolves against the including file's directory and the -I dirs,
+ * "<...>" against the -I dirs only), #ifdef/#ifndef/#if (constant
+ * integer expressions, the defined operator, and constants that are
+ * single-token macros), #elif, #else, #endif, and the dynamic macros
+ * __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
+ * __x86_64__, __linux__.
  *
- * stringize (#) and token paste (##) are not supported, nor are
- * variadic macros; both are rejected at definition time.
+ * variadic macros are not supported and rejected at definition time.
  *
  * it works on the token stream the lexer produces and splices the
  * expanded tokens back into one flat chain for the parser. macro
@@ -118,6 +118,79 @@ static Token *copy_chain(Token *t) {
     cur = cur->next = c;
   }
   return head.next;
+}
+
+/* single-token copy; the output chains may only hold private tokens */
+static Token *copy_token(Token *t) {
+  Token *c = xmalloc(sizeof(Token));
+  *c = *t;
+  c->next = NULL;
+  return c;
+}
+
+static Token *chain_append(Chain *c, Token *t) {
+  chain_add(c, t);
+  return t;
+}
+
+/* parameter index of t in m's parameter list, -1 if it is not one */
+static int param_index(Macro *m, Token *t) {
+  if (t->kind != TK_IDENT || !m->params)
+    return -1;
+  for (int i = 0; i < m->nparams; i++)
+    if (strcmp(t->name, m->params[i]) == 0)
+      return i;
+  return -1;
+}
+
+/* #x -> a string literal token holding the argument's spelling; the
+ * value is the spelling itself, since escaping and unescaping cancel
+ * out, with each run of whitespace between the argument's tokens
+ * becoming a single space (6.10.3.2) */
+static Token *stringize_token(Token *arg, Token *end, Token *at) {
+  int cap = 64, n = 0;
+  char *buf = xmalloc(cap);
+  Token *t = arg;
+  for (; t != end; t = t->next) {
+    if (t != arg && t->space) {
+      if (n + 1 == cap) {
+        cap *= 2;
+        buf = xrealloc(buf, cap);
+      }
+      buf[n++] = ' ';
+    }
+    if (n + t->len >= cap) {
+      while (n + t->len >= cap)
+        cap *= 2;
+      buf = xrealloc(buf, cap);
+    }
+    memcpy(buf + n, t->loc, t->len);
+    n += t->len;
+  }
+  buf[n] = '\0';
+  Token *st = copy_token(at);
+  st->kind = TK_STR;
+  st->str = buf;
+  st->str_len = n;
+  st->name = NULL;
+  return st;
+}
+
+/* a##b: concatenate the two spellings and re-lex the result; a paste
+ * must form exactly one preprocessing token (6.10.3.3) */
+static Token *paste_tokens(Token *a, Token *b) {
+  char *buf = xmalloc(a->len + b->len + 1);
+  memcpy(buf, a->loc, a->len);
+  memcpy(buf + a->len, b->loc, b->len);
+  buf[a->len + b->len] = '\0';
+  Token *nt = tokenize(buf);
+  if (nt->next->kind != TK_EOF)
+    error_at(a->loc, "invalid token paste \"%s\"", buf);
+  nt->next = NULL;
+  nt->line = a->line;
+  nt->at_bol = a->at_bol;
+  nt->space = a->space;
+  return nt;
 }
 
 /* advance to the next token that starts a line (or EOF): directives
@@ -422,6 +495,124 @@ static Token *expand_slice(Token *start, Token *end, int depth) {
   return c.head;
 }
 
+/* substitute the macro body into a fresh chain: parameters become
+ * their arguments (expanded on first non-## use), #x owns the raw
+ * spelling of its argument, and a##b fuses the boundary tokens into
+ * one (operands next to ## are used unexpanded, as 6.10.3.1 demands).
+ * nothing else expands here: the caller rescans the chain, so a body
+ * like CAT(pre, n) sees the substituted arguments, not the parameter
+ * names. args/ends hold the raw argument slices; object-like macros
+ * pass NULL for all three */
+static void subst_body(Macro *m, Token **args, Token **ends,
+                       Token **expanded, Chain *out, int depth) {
+  Chain body;
+  chain_init(&body);
+  Token *tail = NULL;
+  Token *b = m->body;
+  while (b != m->body_end) {
+    /* #param */
+    if (b->kind == TK_PUNCT && *b->loc == '#' && b->len == 1) {
+      Token *pm = b->next;
+      int idx = param_index(m, pm);
+      if (idx < 0)
+        error_at(b->loc, "'#' must be followed by a macro parameter");
+      tail = chain_append(&body, stringize_token(args[idx], ends[idx], b));
+      b = pm->next;
+      continue;
+    }
+
+    /* ## alone: the left operand is already the chain tail */
+    if (b->kind == TK_PUNCT && *b->loc == '#' && b->len == 2) {
+      Token *right = b->next;
+      int ridx = (right != m->body_end) ? param_index(m, right) : -1;
+      Token *rf = NULL;
+      if (ridx >= 0) {
+        if (args[ridx] != ends[ridx])
+          rf = args[ridx];
+      } else if (right != m->body_end) {
+        rf = right;
+      }
+      if (tail && rf) {
+        Token *m2 = paste_tokens(tail, rf);
+        Token *nx = tail->next;
+        *tail = *m2;
+        tail->next = nx;
+      } else if (rf) {
+        tail = chain_append(&body, copy_token(rf));
+      }
+      if (ridx >= 0 && args[ridx] != ends[ridx])
+        for (Token *ct = args[ridx]->next; ct != ends[ridx]; ct = ct->next)
+          tail = chain_append(&body, copy_token(ct));
+      b = (right == m->body_end) ? right : right->next;
+      continue;
+    }
+
+    /* x##: the left operand, used unexpanded; all its tokens but the
+     * last precede the paste, the right operand's first token pairs
+     * with it and the rest follows (6.10.3.3) */
+    if (b->next != m->body_end && b->next->kind == TK_PUNCT &&
+        *b->next->loc == '#' && b->next->len == 2) {
+      Token *right = b->next->next;
+      int lidx = param_index(m, b);
+      int ridx = (right != m->body_end) ? param_index(m, right) : -1;
+      Token *l_last = NULL;
+      int l_empty = 0;
+      if (lidx >= 0) {
+        if (args[lidx] == ends[lidx]) {
+          l_empty = 1;
+        } else {
+          Token *ct = args[lidx];
+          while (ct->next != ends[lidx]) {
+            tail = chain_append(&body, copy_token(ct));
+            ct = ct->next;
+          }
+          l_last = ct;
+        }
+      } else {
+        l_last = b;
+      }
+      Token *rf = NULL;
+      if (ridx >= 0) {
+        if (args[ridx] != ends[ridx])
+          rf = args[ridx];
+      } else if (right != m->body_end) {
+        rf = right;
+      }
+      if (l_last && rf)
+        tail = chain_append(&body, paste_tokens(l_last, rf));
+      else if (l_last && !l_empty)
+        tail = chain_append(&body, copy_token(l_last));
+      else if (rf)
+        tail = chain_append(&body, copy_token(rf));
+      if (ridx >= 0 && args[ridx] != ends[ridx])
+        for (Token *ct = args[ridx]->next; ct != ends[ridx]; ct = ct->next)
+          tail = chain_append(&body, copy_token(ct));
+      b = (right == m->body_end) ? right : right->next;
+      continue;
+    }
+
+    /* a parameter -> its argument, expanded at first use */
+    if (b->kind == TK_IDENT && m->params) {
+      int idx = param_index(m, b);
+      if (idx >= 0) {
+        if (!expanded[idx])
+          expanded[idx] = expand_slice(args[idx], ends[idx], depth + 1);
+        for (Token *ct = copy_chain(expanded[idx]); ct; ct = ct->next)
+          tail = chain_append(&body, ct);
+        b = b->next;
+        continue;
+      }
+    }
+
+    /* plain body token: a copy, left for the rescan */
+    tail = chain_append(&body, copy_token(b));
+    b = b->next;
+  }
+  chain_end(&body);
+  for (Token *x = body.head; x; )
+    expand_unit(&x, out, depth + 1);
+}
+
 static void expand_unit(Token **pp, Chain *out, int depth) {
   if (depth > 256)
     error_at((*pp)->loc, "macro expansion too deep");
@@ -449,9 +640,7 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
   if (!m->is_func) {
     *pp = t->next;
     painting[paint_n++] = m;
-    Token *b = m->body;
-    while (b != m->body_end)
-      expand_unit(&b, out, depth + 1);
+    subst_body(m, NULL, NULL, NULL, out, depth + 1);
     paint_n--;
     return;
   }
@@ -504,29 +693,14 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
                m->name, m->nparams, nargs);
   }
 
-  /* arguments are fully expanded before substitution (6.10.3.1),
-   * without painting this macro: F(F(1)) must expand the inner one */
-  Token *expanded[MAX_MACRO_ARGS];
-  for (int i = 0; i < nargs; i++)
-    expanded[i] = expand_slice(args[i], ends[i], depth + 1);
+  /* arguments expand lazily, at first non-## use, and only then
+   * without painting this macro: F(F(1)) must expand the inner one;
+   * an argument next to ## is used raw, as 6.10.3.3 requires */
+  Token *expanded[MAX_MACRO_ARGS] = {NULL};
 
   /* substitute and rescan the body under the paint */
   painting[paint_n++] = m;
-  Token *b = m->body;
-  while (b != m->body_end) {
-    int sub = 0;
-    if (b->kind == TK_IDENT)
-      for (int i = 0; i < m->nparams; i++)
-        if (strcmp(b->name, m->params[i]) == 0) {
-          for (Token *ct = copy_chain(expanded[i]); ct; ct = ct->next)
-            chain_add(out, ct);
-          b = b->next;
-          sub = 1;
-          break;
-        }
-    if (!sub)
-      expand_unit(&b, out, depth + 1);
-  }
+  subst_body(m, args, ends, expanded, out, depth + 1);
   paint_n--;
 }
 
@@ -659,9 +833,16 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     }
     m->body = b;
     m->body_end = skip_line(&b);
-    for (Token *x = m->body; x != m->body_end; x = x->next)
-      if (x->kind == TK_PUNCT && *x->loc == '#' && x->len == 1)
-        error_at(x->loc, "stringize/paste not supported in macros");
+    for (Token *x = m->body; x != m->body_end; x = x->next) {
+      if (x->kind == TK_PUNCT && *x->loc == '#' && x->len == 1) {
+        if (x->next == m->body_end || param_index(m, x->next) < 0)
+          error_at(x->loc, "'#' must be followed by a macro parameter");
+      }
+      if (x->kind == TK_PUNCT && *x->loc == '#' && x->len == 2) {
+        if (x == m->body || x->next == m->body_end)
+          error_at(x->loc, "'##' may not start or end a replacement list");
+      }
+    }
     *pp = m->body_end;
     return;
   }
