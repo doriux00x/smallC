@@ -19,14 +19,16 @@ The language subset grows all the time. As of now it handles:
   `false` are not built in; `#define bool _Bool` and so on if you
   want them.
 - A small preprocessor: object-like and function-like `#define` and
-  `#undef`, with `#` stringize and `##` token paste, `#include` in
-  "..." (resolved against the including file's directory) and <...>
-  form with `-I` search paths, and `#if` / `#ifdef` / `#ifndef` /
-  `#elif` / `#else` / `#endif` with constant expressions, `defined()`,
-  and the dynamic macros `__LINE__`, `__FILE__`, `__COUNTER__`,
-  `__STDC__`, `__STDC_VERSION__`. Backslash-newline splicing works
-  everywhere the standard does it: between tokens, in comments, and
-  inside string and character literals.
+  `#undef`, with `#` stringize and `##` token paste, variadic macros
+  (`...` / `__VA_ARGS__`, including the GNU `, ## __VA_ARGS__` comma
+  swallow), `#include` in "..." (resolved against the including
+  file's directory) and <...> form with `-I` search paths, and `#if`
+  / `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif` with constant
+  expressions, `defined()`, and the dynamic macros `__LINE__`,
+  `__FILE__`, `__COUNTER__`, `__STDC__`, `__STDC_VERSION__`.
+  Backslash-newline splicing works everywhere the standard does it:
+  between tokens, in comments, and inside string and character
+  literals.
 - Floating point: float and double, with SSE codegen
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
@@ -79,12 +81,13 @@ Known gaps, in no particular order:
 
 - No VLA.
 - Very small preprocessor: object-like and function-like `#define`
-  with `#` stringize and `##` paste, `#include` in quote and <...>
-  form with `-I` search paths, and `#if`/`#ifdef`/`#ifndef`/`#elif`/
-  `#else`/`#endif` with constant expressions and `defined()`. But no
-  variadic macros (`...`/`__VA_ARGS__`), no `#pragma` handling beyond
-  skipping, and the standard headers are not shipped; declare the few
-  libc functions you use by hand, as the tests do.
+  with `#` stringize and `##` paste, variadic macros
+  (`...`/`__VA_ARGS__`, with the GNU `, ## __VA_ARGS__` comma
+  swallow), `#include` in quote and <...> form with `-I` search
+  paths, and `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` with
+  constant expressions and `defined()`. But no `#pragma` handling
+  beyond skipping, and the standard headers are not shipped; declare
+  the few libc functions you use by hand, as the tests do.
 - Only 64-bit x86 (System V ABI, Linux/ELF). No Windows, no ARM,
   no 32-bit.
 - Global float/double initializers must be constant expressions,

@@ -2,9 +2,10 @@
  * #ifndef/#elif/#else/#endif with constant expressions and defined(),
  * #undef, quote-form #include resolved against the including file's
  * directory, # stringize, ## token paste, backslash-newline splicing,
- * and the dynamic macros __LINE__/__FILE__/__COUNTER__/__STDC__.
- * every check adds 1 to the counter; the fail branches add 1000 so
- * any mis-evaluated conditional blows the total. */
+ * variadic macros (... / __VA_ARGS__ with the GNU , ## __VA_ARGS__
+ * comma swallow), and the dynamic macros __LINE__/__FILE__/
+ * __COUNTER__/__STDC__. every check adds 1 to the counter; the fail
+ * branches add 1000 so any mis-evaluated conditional blows the total. */
 
 #include "inc/preproc.h"
 
@@ -161,7 +162,27 @@ int main(void) {
 o";
   check += (strcmp(twolines, "foo") == 0);
 
-  if (check != 39)
+  /* variadic macros: the last parameter takes the rest of the args */
+#define FIRST(a, ...) a
+#define SUM(...) __VA_ARGS__ + 1
+#define TAIL(a, ...) __VA_ARGS__
+#define STRV(...) #__VA_ARGS__
+#define NARGS(...) NARGS_(__VA_ARGS__, 4, 3, 2, 1, 0)
+#define NARGS_(e1, e2, e3, e4, n, ...) n
+#define DPRINTF(fmt, ...) printf(fmt, ## __VA_ARGS__)
+  check += (FIRST(1, 2, 3) == 1);
+  check += (FIRST(7) == 7);                    /* empty __VA_ARGS__ */
+  check += (SUM(4 + 5) == 10);                 /* tail spliced into body */
+  check += (TAIL(1, 2, 3) == 3);               /* all extra args pass through */
+  check += (strcmp(STRV(1 + 2), "1 + 2") == 0);
+  check += (strcmp(STRV(), "") == 0);          /* stringized empty */
+  check += (NARGS() == 1);                     /* the count trick */
+  check += (NARGS(7, 8) == 2);
+  check += (NARGS(7, 8, 9) == 3);
+  check += (DPRINTF("x%d", 5) == 2);           /* comma kept, args passed */
+  check += (DPRINTF("y") == 1);                /* comma swallowed */
+
+  if (check != 50)
     return check;
   printf("runpreproc ok\n");
   return 0;

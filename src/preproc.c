@@ -5,15 +5,14 @@
 #include "libc.h"
 
 /* a bare-bones preprocessor: #define (object- and function-like,
- * with # stringize and ## token paste), #undef, #include ("..."
- * resolves against the including file's directory and the -I dirs,
- * "<...>" against the -I dirs only), #ifdef/#ifndef/#if (constant
- * integer expressions, the defined operator, and constants that are
- * single-token macros), #elif, #else, #endif, and the dynamic macros
- * __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
+ * with # stringize and ## token paste), variadic macros ("..." and
+ * __VA_ARGS__, with the GNU , ## __VA_ARGS__ comma swallow), #undef,
+ * #include ("..." resolves against the including file's directory and
+ * the -I dirs, "<...>" against the -I dirs only), #ifdef/#ifndef/#if
+ * (constant integer expressions, the defined operator, and constants
+ * that are single-token macros), #elif, #else, #endif, and the dynamic
+ * macros __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
  * __x86_64__, __linux__.
- *
- * variadic macros are not supported and rejected at definition time.
  *
  * it works on the token stream the lexer produces and splices the
  * expanded tokens back into one flat chain for the parser. macro
@@ -42,6 +41,7 @@ struct Macro {
   Macro *next;
   char *name;
   int is_func;          /* function-like: invoked only as F(...) */
+  int is_varargs;       /* the parameter list ends in "..." */
   int nparams;
   char **params;
   Token *body;          /* body tokens, iterated by bounds */
@@ -578,6 +578,20 @@ static void subst_body(Macro *m, Token **args, Token **ends,
       } else if (right != m->body_end) {
         rf = right;
       }
+      /* GNU , ## __VA_ARGS__: the comma survives only when the
+       * variadic slice is non-empty, and it brings the fully expanded
+       * tail with it (no paste) */
+      if (m->is_varargs && ridx == m->nparams - 1 && is_punct(b, ',')) {
+        if (args[ridx] != ends[ridx]) {
+          tail = chain_append(&body, copy_token(b));
+          if (!expanded[ridx])
+            expanded[ridx] = expand_slice(args[ridx], ends[ridx], depth + 1);
+          for (Token *ct = copy_chain(expanded[ridx]); ct; ct = ct->next)
+            tail = chain_append(&body, ct);
+        }
+        b = (right == m->body_end) ? right : right->next;
+        continue;
+      }
       if (l_last && rf)
         tail = chain_append(&body, paste_tokens(l_last, rf));
       else if (l_last && !l_empty)
@@ -686,7 +700,23 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
     }
   }
   *pp = tt->next;   /* past the ')' */
-  if (nargs != m->nparams) {
+  if (m->is_varargs) {
+    int named = m->nparams - 1;
+    int empty = (nargs == 1 && args[0] == ends[0]);
+    if (nargs < named || (empty && named > 0))
+      error_at(open->loc, "macro '%s' needs at least %d argument(s), got %d",
+               m->name, named, empty ? 0 : nargs);
+    /* the arguments past the named ones all belong to __VA_ARGS__;
+     * with none, its slice is the empty [ends[named-1], ends[named]) */
+    if (nargs > named) {
+      ends[named] = ends[nargs - 1];
+      nargs = named + 1;
+    } else {
+      args[named] = ends[named - 1];
+      ends[named] = ends[named - 1];
+      nargs = named + 1;
+    }
+  } else if (nargs != m->nparams) {
     int ok_empty = (nargs == 1 && m->nparams == 0 && args[0] == ends[0]);
     if (!ok_empty)
       error_at(open->loc, "macro '%s' needs %d argument(s), got %d",
@@ -805,6 +835,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     m->nparams = 0;
     m->params = NULL;
     m->is_func = 0;
+    m->is_varargs = 0;
     Token *b = d->next;
     if (b->kind == TK_PUNCT && *b->loc == '(' && !b->space) {
       m->is_func = 1;
@@ -812,8 +843,19 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
       if (!(b->kind == TK_PUNCT && *b->loc == ')' && b->len == 1)) {
         for (;;) {
           if (b->kind == TK_PUNCT && b->len == 3 &&
-              memcmp(b->loc, "...", 3) == 0)
-            error_at(b->loc, "variadic macros not supported");
+              memcmp(b->loc, "...", 3) == 0) {
+            /* "..." must end the list; __VA_ARGS__ becomes the last
+             * parameter, so body substitution, # stringize and ##
+             * pasting all see it through the normal machinery */
+            m->is_varargs = 1;
+            m->params = xrealloc(m->params,
+                                 sizeof(char *) * (m->nparams + 1));
+            m->params[m->nparams++] = "__VA_ARGS__";
+            b = b->next;
+            if (!(b->kind == TK_PUNCT && *b->loc == ')' && b->len == 1))
+              error_at(b->loc, "expected ')' after '...'");
+            break;
+          }
           if (b->kind != TK_IDENT)
             error_at(b->loc, "expected parameter name");
           m->params = xrealloc(m->params,
