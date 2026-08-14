@@ -1135,6 +1135,7 @@ static Node *parse_declaration(void);
 static Node *parse_stmt(void);
 static Node *parse_block(void);
 static void parse_typedef(void);
+static void parse_static_assert(void);
 
 static Node *parse_block(void) {
   /* '{' already consumed */
@@ -1318,6 +1319,11 @@ static Node *parse_stmt(void) {
 
   if (consume(TK_TYPEDEF)) {
     parse_typedef();
+    return NULL;
+  }
+
+  if (consume(TK_STATIC_ASSERT)) {
+    parse_static_assert();
     return NULL;
   }
 
@@ -1629,6 +1635,24 @@ static void parse_typedef(void) {
   expect_punct(";");
 }
 
+/* _Static_assert(cond, "msg");  the condition is an integer constant
+ * expression, and a zero value is a compile-time error that reports
+ * the given message, exactly as gcc does */
+static void parse_static_assert(void) {
+  expect_punct("(");
+  Node *cond = parse_assign();
+  int ok = 1;
+  int v = try_eval_const(cond, &ok);
+  if (!ok)
+    error_at(tok->loc, "static assertion condition is not a constant");
+  expect_punct(",");
+  Token *msg = expect(TK_STR, "string literal in _Static_assert");
+  expect_punct(")");
+  expect_punct(";");
+  if (!v)
+    error_at(tok->loc, "static assertion failed: %s", msg->str);
+}
+
 static Node *parse_declaration(void) {
   /* storage class prefixes: the flags live on the produced nodes;
    * typedef with a storage class is rejected below. register is a
@@ -1644,6 +1668,13 @@ static Node *parse_declaration(void) {
       is_reg = 1;
     else
       break;
+  }
+
+  if (consume(TK_STATIC_ASSERT)) {
+    if (is_static || is_extern || is_reg)
+      error_at(tok->loc, "storage class on a _Static_assert");
+    parse_static_assert();
+    return NULL;
   }
 
   if (consume(TK_TYPEDEF)) {

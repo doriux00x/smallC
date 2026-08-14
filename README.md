@@ -50,6 +50,11 @@ The language subset grows all the time. As of now it handles:
   no `static` VLAs, no VLA struct members; a VLA parameter decays to
   a pointer, as in C.
 - Struct, union, and enum types
+- `_Static_assert(cond, "msg")` at top level and inside functions;
+  the condition is an integer constant expression (`sizeof`,
+  arithmetic, comparisons, `defined()`-style macro tricks), and a
+  zero value is a compile-time error carrying the message. The
+  condition must be constant, so VLA `sizeof` is rejected.
 - Flexible array members: the last member of a struct may be an
   incomplete array (`int a[]`); it adds nothing to `sizeof`
 - Bit-fields (`int x : 3`), including unnamed and zero-width

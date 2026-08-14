@@ -22,6 +22,7 @@ static Keyword keywords[] = {
   {"for", TK_FOR}, {"return", TK_RETURN}, {"sizeof", TK_SIZEOF},
   {"break", TK_BREAK}, {"continue", TK_CONTINUE}, {"do", TK_DO},
   {"switch", TK_SWITCH}, {"case", TK_CASE}, {"default", TK_DEFAULT}, {"goto", TK_GOTO},
+  {"_Static_assert", TK_STATIC_ASSERT},
 };
 
 /* longest first so ">>=" wins over ">>" which wins over ">" */
