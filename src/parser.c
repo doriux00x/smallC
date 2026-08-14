@@ -297,13 +297,17 @@ static void parse_enumerators(void) {
   expect_punct("}");
 }
 
-static Member *parse_struct_members(void) {
+static Member *parse_struct_members(int is_union) {
   Member head = {0};
   Member **link = &head.next;
+  int count = 0;
+  int saw_fam = 0;
 
   while (!is_punct("}")) {
     if (tok->kind == TK_EOF)
       error_at(tok->loc, "unexpected EOF inside struct definition");
+    if (saw_fam)
+      error_at(tok->loc, "flexible array member must be the last member");
     Type *base = parse_typespec();
     for (;;) {
       char *name;
@@ -335,10 +339,22 @@ static Member *parse_struct_members(void) {
       }
       *link = m;
       link = &m->next;
+      count++;
+      /* an incomplete array type ("int a[]") is a flexible array
+       * member: it must be the last member, and it needs at least
+       * one member before it (6.7.2.1) */
+      if (mt->kind == TY_ARRAY && mt->array_len == 0)
+        saw_fam = 1;
       if (!consume_punct(","))
         break;
     }
     expect_punct(";");
+  }
+  if (saw_fam) {
+    if (is_union)
+      error_at(tok->loc, "a union cannot have a flexible array member");
+    if (count == 1)
+      error_at(tok->loc, "flexible array member needs a member before it");
   }
   consume_punct("}");
   return head.next;
@@ -418,7 +434,7 @@ static Type *parse_typespec(void) {
           if (tag)
             register_tag(tag, ut);
         }
-        ut->members = parse_struct_members();
+        ut->members = parse_struct_members(1);
         if (!ut->members)
           error_at(tok->loc, "empty union");
         layout_union(ut);
@@ -451,7 +467,7 @@ static Type *parse_typespec(void) {
           if (tag)
             register_tag(tag, st);
         }
-        st->members = parse_struct_members();
+        st->members = parse_struct_members(0);
         if (!st->members)
           error_at(tok->loc, "empty struct");
         layout_struct(st);

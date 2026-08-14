@@ -36,6 +36,8 @@ The language subset grows all the time. As of now it handles:
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
 - Struct, union, and enum types
+- Flexible array members: the last member of a struct may be an
+  incomplete array (`int a[]`); it adds nothing to `sizeof`
 - Bit-fields (`int x : 3`), including unnamed and zero-width
   alignment markers; bit-field initializers are rejected
 - typedef
