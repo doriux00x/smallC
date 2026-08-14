@@ -1,5 +1,5 @@
 /* switch / case / default: dispatch, fallthrough, nesting, labels in
- * branches, break semantics */
+ * branches, break semantics, GNU case ranges */
 
 int classify(int x) {
   switch (x) {
@@ -139,6 +139,32 @@ int main() {
   if (label_in_else(3) != 3) return 25;
   if (switch_in_loop_body() != 7) return 26;
   if (empty_switch() != 4) return 27;
+
+  if (range_cat(0) != 40 || range_cat(1) != 10 || range_cat(2) != 10 ||
+      range_cat(3) != 10 || range_cat(4) != 20 || range_cat(6) != 20 ||
+      range_cat(7) != 40 || range_cat(8) != 30 || range_cat(99) != 40)
+    return 28;
+  if (range_edges(9) != 5) return 29;
+  if (range_edges(100) != 5) return 30;
+  if (range_edges(8) != 5) return 31;
   printf("runswitch ok\n");
   return 0;
+}
+
+/* GNU case ranges: 1 ... 3 matches any value in the closed span */
+int range_cat(int x) {
+  switch (x) {
+    case 1 ... 3: return 10;
+    case 4 ... 6: return 20;
+    case 8: return 30;
+    default: return 40;
+  }
+}
+
+int range_edges(int x) {
+  switch (x) {
+    case 0 ... 9: return 5;
+    case 100 ... 200: return 5;
+    default: return 8;
+  }
 }

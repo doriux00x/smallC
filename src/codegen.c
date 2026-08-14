@@ -931,10 +931,11 @@ static void walk_cases(Node *s, void (*fn)(Node *, void *), void *arg) {
   }
 }
 
-/* case-label validation state for one switch: the values seen so far
- * (for duplicate detection) and whether a default has been seen */
+/* case-label validation state for one switch: the [lo, hi] spans seen
+ * so far (a plain "case N:" is the span [N, N]) and whether a
+ * default has been seen */
 typedef struct {
-  int *seen;
+  int *seen;       /* pairs: [lo0, hi0, lo1, hi1, ...] */
   int n, cap;
   int seen_def;
 } CaseCheck;
@@ -953,14 +954,30 @@ static void check_case(Node *c, void *arg) {
   CVal v = const_fold(c->lhs);
   if (v.is_float)
     error("case label is not an integer constant");
-  if (cs->n == cs->cap) {
-    cs->cap = cs->cap ? cs->cap * 2 : 8;
-    cs->seen = xrealloc(cs->seen, sizeof(int) * cs->cap);
+  CVal w = v;
+  if (c->rhs) {
+    /* a GNU case range: both ends must be constants and ordered */
+    resolve_expr(c->rhs);
+    if (!is_const_expr(c->rhs))
+      error("case range end is not a constant");
+    w = const_fold(c->rhs);
+    if (w.is_float)
+      error("case range end is not an integer constant");
+    if (v.val > w.val)
+      error("case range is empty");
   }
   for (int i = 0; i < cs->n; i++)
-    if (cs->seen[i] == v.val)
+    /* closed spans overlap when neither starts past the other's end */
+    if (v.val <= cs->seen[2 * i + 1] && cs->seen[2 * i] <= w.val)
       error("duplicate case value");
-  cs->seen[cs->n++] = v.val;
+  if (cs->n + 1 > cs->cap) {
+    cs->cap = cs->cap ? cs->cap * 2 : 8;
+    /* each span is a pair of ints */
+    cs->seen = xrealloc(cs->seen, sizeof(int) * cs->cap * 2);
+  }
+  cs->seen[2 * cs->n] = v.val;
+  cs->seen[2 * cs->n + 1] = w.val;
+  cs->n++;
 }
 
 static void resolve_stmt(Node *n) {
@@ -2323,9 +2340,22 @@ static void gen_case_label(Node *c, void *arg) {
     *def = c->label;
     return;
   }
-  CVal v = const_fold(c->lhs);
-  fprintf(out, "  cmp $%d, %%rax\n", v.val);
-  fprintf(out, "  je .L%d\n", c->label);
+  CVal lo = const_fold(c->lhs);
+  if (!c->rhs) {
+    fprintf(out, "  cmp $%d, %%rax\n", lo.val);
+    fprintf(out, "  je .L%d\n", c->label);
+    return;
+  }
+  /* a range needs a full boundary check: jump to the body only when
+   * start <= value <= end, otherwise fall through to the next label */
+  CVal hi = const_fold(c->rhs);
+  int skip = labeln++;
+  fprintf(out, "  cmp $%d, %%rax\n", lo.val);
+  fprintf(out, "  jl .L%d\n", skip);
+  fprintf(out, "  cmp $%d, %%rax\n", hi.val);
+  fprintf(out, "  jg .L%d\n", skip);
+  fprintf(out, "  jmp .L%d\n", c->label);
+  fprintf(out, ".L%d:\n", skip);
 }
 
 /* label registry for one function: name -> jump label number.

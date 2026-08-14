@@ -603,6 +603,7 @@ static int is_assign_op(int op) {
 
 static Node *node_new(NodeKind k) {
   Node *n = xmalloc(sizeof(Node));
+  memset(n, 0, sizeof(Node));
   n->kind = k;
   return n;
 }
@@ -1190,6 +1191,10 @@ static Node *parse_stmt(void) {
       error_at(tok->loc, "case label outside a switch");
     Node *n = node_new(ND_CASE);
     n->lhs = parse_assign();
+    if (is_punct("...")) {   /* GNU case range: case lo ... hi: */
+      tok = tok->next;
+      n->rhs = parse_assign();
+    }
     expect_punct(":");
     n->body = parse_stmt();
     return n;

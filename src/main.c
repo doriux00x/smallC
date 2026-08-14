@@ -277,6 +277,10 @@ static void dump_stmt(Node *n, int d) {
       if (n->lhs) {
         printf("case:\n");
         dump_expr(n->lhs, d + 1);
+        if (n->rhs) {
+          printf("...to:\n");
+          dump_expr(n->rhs, d + 1);
+        }
       } else {
         printf("default\n");
       }
@@ -393,7 +397,7 @@ int main(int argc, char **argv) {
       if (t->kind == TK_PUNCT)
         printf("PUNCT '%.*s'\n", t->len, t->loc);
       else if (t->kind == TK_NUM)
-        printf("NUM %d\n", t->val);
+        printf("NUM %d%s\n", t->val, t->is_float ? " (float)" : "");
       else
         printf("%s '%.*s'\n", token_kind_name(t->kind), t->len, t->loc);
     }

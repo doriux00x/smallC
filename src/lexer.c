@@ -38,6 +38,7 @@ static char *puncts[] = {
 static Token *tok_new(TokenKind kind, char *start, int len,
                       int line, int at_bol, int space) {
   Token *t = xmalloc(sizeof(Token));
+  memset(t, 0, sizeof(Token));
   t->kind = kind;
   t->loc = start;
   t->len = len;
