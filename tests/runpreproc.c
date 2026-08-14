@@ -3,13 +3,16 @@
  * #undef, quote-form #include resolved against the including file's
  * directory, # stringize, ## token paste, backslash-newline splicing,
  * variadic macros (... / __VA_ARGS__ with the GNU , ## __VA_ARGS__
- * comma swallow), and the dynamic macros __LINE__/__FILE__/
+ * comma swallow), zero-parameter macros, empty macro arguments,
+ * and the dynamic macros __LINE__/__FILE__/
  * __COUNTER__/__STDC__. every check adds 1 to the counter; the fail
  * branches add 1000 so any mis-evaluated conditional blows the total. */
 
 #include "inc/preproc.h"
 
 #define VERSION 3
+#define ZERO0() 0
+#define E2(a, b) #a
 #define SQUARE(x) ((x) * (x))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define IS_EVEN(n) ((n) % 2 == 0)
@@ -181,8 +184,10 @@ o";
   check += (NARGS(7, 8, 9) == 3);
   check += (DPRINTF("x%d", 5) == 2);           /* comma kept, args passed */
   check += (DPRINTF("y") == 1);                /* comma swallowed */
+  check += (ZERO0() == 0);                     /* zero-parameter macro */
+  check += (strcmp(E2(, 5), "") == 0);         /* empty argument stringized */
 
-  if (check != 50)
+  if (check != 52)
     return check;
   printf("runpreproc ok\n");
   return 0;

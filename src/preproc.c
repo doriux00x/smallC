@@ -840,7 +840,9 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     if (b->kind == TK_PUNCT && *b->loc == '(' && !b->space) {
       m->is_func = 1;
       b = b->next;
-      if (!(b->kind == TK_PUNCT && *b->loc == ')' && b->len == 1)) {
+      if (b->kind == TK_PUNCT && *b->loc == ')' && b->len == 1) {
+        b = b->next;
+      } else {
         for (;;) {
           if (b->kind == TK_PUNCT && b->len == 3 &&
               memcmp(b->loc, "...", 3) == 0) {

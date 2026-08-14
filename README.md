@@ -21,7 +21,8 @@ The language subset grows all the time. As of now it handles:
   `false` are not built in; `#define bool _Bool` and so on if you
   want them.
 - A small preprocessor: object-like and function-like `#define` and
-  `#undef`, with `#` stringize and `##` token paste, variadic macros
+  `#undef`, with `#` stringize and `##` token paste (including
+  zero-parameter macros and empty macro arguments), variadic macros
   (`...` / `__VA_ARGS__`, including the GNU `, ## __VA_ARGS__` comma
   swallow), `#include` in "..." (resolved against the including
   file's directory) and <...> form with `-I` search paths, and `#if`
