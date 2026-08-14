@@ -33,6 +33,12 @@ The language subset grows all the time. As of now it handles:
   literals.
 - Floating point: float and double, with SSE codegen, and hex float
   literals (`0x1.8p3`, `0x1p4`) with the f/L suffixes
+- The C99 escape sequences in string and character literals: `\a` `\b`
+  `\f` `\n` `\r` `\t` `\v` `\\` `\'` `\"` `\?`, octal `\ooo` (up to
+  three digits) and hex `\xhh` (any number of hex digits, truncated
+  to 8 bits, as gcc does). A numeric escape above 127 in a character
+  literal is interpreted as a signed execution char, so `'\xff'` is
+  -1 on x86-64, exactly as gcc computes it.
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
 - Struct, union, and enum types

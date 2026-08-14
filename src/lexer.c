@@ -46,19 +46,51 @@ static Token *tok_new(TokenKind kind, char *start, int len,
   return t;
 }
 
-/* decodes one escape sequence; pp points at the backslash, advanced past it */
-static char decode_escape(char *start, char **pp) {
+/* decodes one escape sequence; pp points at the backslash, advanced
+ * past it. the C99 set: \a \b \f \n \r \t \v \\ \' \" \? and the
+ * numeric forms \ooo (up to three octal digits) and \xhh... (any
+ * number of hex digits); numbers beyond 255 keep the low 8 bits,
+ * as gcc does */
+static int decode_escape(char *start, char **pp) {
   char *p = *pp;
   p++;
+
+  if (*p == 'x' || *p == 'X') {
+    p++;
+    int v = 0, n = 0;
+    while (isxdigit((unsigned char)*p)) {
+      v = v * 16 + (isdigit((unsigned char)*p) ? *p - '0' :
+                    (tolower((unsigned char)*p) - 'a' + 10));
+      n++;
+      p++;
+    }
+    if (n == 0)
+      error_at(start, "expected hex digits after '\\x'");
+    *pp = p;
+    return v & 255;
+  }
+
+  if (*p >= '0' && *p <= '7') {
+    int v = 0;
+    for (int i = 0; i < 3 && *p >= '0' && *p <= '7'; i++, p++)
+      v = v * 8 + (*p - '0');
+    *pp = p;
+    return v & 255;
+  }
+
   char c = 0;
   switch (*p) {
+    case 'a':  c = '\a'; break;
+    case 'b':  c = '\b'; break;
+    case 'f':  c = '\f'; break;
     case 'n':  c = '\n'; break;
-    case 't':  c = '\t'; break;
     case 'r':  c = '\r'; break;
-    case '0':  c = '\0'; break;
+    case 't':  c = '\t'; break;
+    case 'v':  c = '\v'; break;
     case '\\': c = '\\'; break;
     case '\'': c = '\''; break;
     case '"':  c = '"';  break;
+    case '?':  c = '?';  break;
     default:
       error_at(start, "unknown escape sequence '\\%c'", *p);
   }
@@ -291,7 +323,9 @@ Token *tokenize(char *p) {
       p++;
 
       Token *t = tok_new(TK_NUM, start, p - start, line, at_bol, space);
-      t->val = c;
+      /* a char constant is the execution character interpreted as
+       * (signed) char: '\xff' is -1 on x86-64, as gcc does */
+      t->val = (int)(signed char)c;
       cur = cur->next = t;
       space = 0;
       at_bol = 0;
