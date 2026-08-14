@@ -24,6 +24,7 @@ static Keyword keywords[] = {
   {"switch", TK_SWITCH}, {"case", TK_CASE}, {"default", TK_DEFAULT}, {"goto", TK_GOTO},
   {"_Static_assert", TK_STATIC_ASSERT},
   {"_Alignof", TK_ALIGNOF}, {"_Alignas", TK_ALIGNAS},
+  {"_Generic", TK_GENERIC},
 };
 
 /* longest first so ">>=" wins over ">>" which wins over ">" */
@@ -367,7 +368,7 @@ static char *kind_names[] = {
   "IF", "ELSE", "WHILE", "FOR", "RETURN",
   "SIZEOF", "BREAK", "CONTINUE", "DO",
   "SWITCH", "CASE", "DEFAULT", "GOTO", "STATIC_ASSERT",
-  "ALIGNOF", "ALIGNAS",
+  "ALIGNOF", "ALIGNAS", "GENERIC",
   "PUNCT",
 };
 

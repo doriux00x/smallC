@@ -106,6 +106,10 @@ typedef enum {
   ND_DESIG,          /* .name = v / [idx] = v in a brace list; name
                         or lhs the target, then the value or a chain */
   ND_ALIGNOF,        /* _Alignof expr (lhs) or type (targ) */
+  ND_GENERIC,        /* _Generic(expr, type: arm, ..., default: arm);
+                        cond the controlling expr, els the association
+                        chain (each type in targ, arm in lhs, default
+                        arm targ==NULL), then the chosen arm */
 } NodeKind;
 
 /* operator codes for ND_BIN/ND_UNARY/ND_ASSIGN.

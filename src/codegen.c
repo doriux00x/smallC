@@ -343,6 +343,72 @@ static void resolve_cond(Node *n) {
   n->type = n->then->type;
 }
 
+/* _Generic matches the controlling expression's type, after the
+ * lvalue, array-to-pointer and function-to-pointer conversions. the
+ * control side's top-level qualifiers were dropped by conversion, so
+ * only its root is compared unqualified; everything nested (a pointer
+ * pointee, an array element) keeps its qualifiers */
+static int generic_match(Type *a, Type *b, int root) {
+  if (a->kind != b->kind)
+    return 0;
+  if ((root ? (b->is_const || b->is_volatile)
+            : (a->is_const != b->is_const ||
+               a->is_volatile != b->is_volatile)))
+    return 0;
+  switch (a->kind) {
+    case TY_CHAR:
+      return a->is_bool == b->is_bool;
+    case TY_SHORT:
+    case TY_INT:
+    case TY_LONG:
+      return a->is_unsigned == b->is_unsigned &&
+             a->is_longlong == b->is_longlong;
+    case TY_FLOAT:
+    case TY_DOUBLE:
+      return 1;
+    case TY_PTR:
+      return generic_match(a->base, b->base, 0);
+    case TY_ARRAY:
+      return a->array_len == b->array_len &&
+             generic_match(a->base, b->base, 0);
+    case TY_STRUCT:
+    case TY_UNION:
+      return a == b;
+    default:
+      return 1;
+  }
+}
+
+static void resolve_generic(Node *n) {
+  /* the controlling expression is only examined for its type */
+  resolve_expr(n->cond);
+  Type *control = n->cond->type;
+  if (control->kind == TY_ARRAY || control->kind == TY_FUNC)
+    control = ptr_to(control->base);
+
+  Node *chosen = NULL, *deflt = NULL;
+  for (Node *a = n->els; a; a = a->next) {
+    if (!a->targ) {
+      if (deflt)
+        error("duplicate default in _Generic");
+      deflt = a->lhs;
+      continue;
+    }
+    if (generic_match(control, a->targ, 1)) {
+      if (chosen)
+        error("duplicate match in _Generic");
+      chosen = a->lhs;
+    }
+  }
+  if (!chosen)
+    chosen = deflt;
+  if (!chosen)
+    error("no association matches the _Generic controlling type");
+  resolve_expr(chosen);
+  n->then = chosen;
+  n->type = chosen->type;
+}
+
 /* the only node kind that gets a type assigned when it's built is
  * ND_DECL; everything else lands here */
 static void resolve_expr(Node *n) {
@@ -514,6 +580,9 @@ static void resolve_expr(Node *n) {
         n->val = type_align(n->targ);
       }
       n->type = type_new(TY_INT);
+      return;
+    case ND_GENERIC:
+      resolve_generic(n);
       return;
     case ND_VA_START:
       resolve_expr(n->lhs);
@@ -1578,6 +1647,10 @@ static void gen_addr(Node *n) {
       }
       error("not an lvalue");
       return;
+    case ND_GENERIC:
+      /* the selection is an lvalue exactly when the chosen arm is */
+      gen_addr(n->then);
+      return;
     default:
       error("not an lvalue");
   }
@@ -2254,6 +2327,11 @@ static void gen_expr(Node *n) {
       return;
     case ND_ALIGNOF:
       fprintf(out, "  mov $%d, %%rax\n", n->val);
+      return;
+    case ND_GENERIC:
+      /* resolution spliced the chosen arm into n->then, so the
+       * generic selection is just that arm's code */
+      gen_expr(n->then);
       return;
     case ND_VA_START: {
       /* ap gets the register counts va_start computed at parse time,

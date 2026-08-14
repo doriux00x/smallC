@@ -1061,6 +1061,40 @@ static Node *parse_va_copy(void) {
   return n;
 }
 
+/* _Generic(expr, type-name: arm, ..., default: arm). the controlling
+ * expression is parsed but not evaluated; the association list turns
+ * into a chain of nodes each carrying a type-name (targ) and its arm
+ * (lhs). selection happens at resolve time, once the controlling
+ * expression has a type */
+static Node *parse_generic(void) {
+  expect_punct("(");
+  Node *n = node_new(ND_GENERIC);
+  n->cond = parse_assign();
+  expect_punct(",");
+
+  Node *head = NULL, **tail = &head;
+  for (;;) {
+    Node *a = node_new(ND_GENERIC);
+    if (consume(TK_DEFAULT)) {
+      expect_punct(":");
+      a->lhs = parse_assign();
+    } else {
+      char *dummy;
+      a->targ = declarator(parse_typespec(NULL), &dummy);
+      expect_punct(":");
+      a->lhs = parse_assign();
+    }
+    *tail = a;
+    tail = &a->next;
+    if (consume_punct(","))
+      continue;
+    break;
+  }
+  expect_punct(")");
+  n->els = head;
+  return n;
+}
+
 static Node *parse_primary(void) {
   if (at(TK_ALIGNOF)) {
     tok = tok->next;
@@ -1077,6 +1111,11 @@ static Node *parse_primary(void) {
     else
       n->lhs = parse_unary();
     return n;
+  }
+
+  if (at(TK_GENERIC)) {
+    tok = tok->next;
+    return parse_generic();
   }
 
   if (at(TK_SIZEOF)) {

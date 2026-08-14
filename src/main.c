@@ -187,6 +187,17 @@ static void dump_expr(Node *n, int d) {
         printf("alignof type = %d bytes\n", n->targ->align);
       }
       return;
+    case ND_GENERIC:
+      printf("generic\n");
+      dump_expr(n->cond, d + 1);
+      for (Node *a = n->els; a; a = a->next) {
+        if (a->targ)
+          printf("assoc type\n");
+        else
+          printf("assoc default\n");
+        dump_expr(a->lhs, d + 1);
+      }
+      return;
     case ND_CAST:
       printf("cast to ");
       dump_type(n->targ);
