@@ -223,7 +223,10 @@ static void register_enum_tag(char *name) {
 
 /* a constant expression, folded for enumerator values; everything
  * else enumerated is not a constant */
-static int eval_const(Node *e) {
+/* constant-folds e; on success *ok stays 1 and the value comes
+ * back, on failure *ok is 0. the caller decides whether the
+ * expression "was not a constant" or is a VLA dimension */
+static int try_eval_const(Node *e, int *ok) {
   switch (e->kind) {
   case ND_NUM:
     if (e->is_float)
@@ -231,15 +234,19 @@ static int eval_const(Node *e) {
     return e->val;
   case ND_UNARY:
     switch (e->op) {
-    case '+': return eval_const(e->lhs);
-    case '-': return -eval_const(e->lhs);
-    case '~': return ~eval_const(e->lhs);
-    case '!': return !eval_const(e->lhs);
+    case '+': return try_eval_const(e->lhs, ok);
+    case '-': return -try_eval_const(e->lhs, ok);
+    case '~': return ~try_eval_const(e->lhs, ok);
+    case '!': return !try_eval_const(e->lhs, ok);
     }
     break;
   case ND_BIN: {
-    int lhs = eval_const(e->lhs);
-    int rhs = eval_const(e->rhs);
+    int lhs = try_eval_const(e->lhs, ok);
+    if (!*ok)
+      return 0;
+    int rhs = try_eval_const(e->rhs, ok);
+    if (!*ok)
+      return 0;
     switch (e->op) {
     case '+': return lhs + rhs;
     case '-': return lhs - rhs;
@@ -269,15 +276,30 @@ static int eval_const(Node *e) {
     break;
   }
   case ND_SIZEOF:
-    if (e->targ)
+    if (e->targ) {
+      if (type_is_vla(e->targ))
+        break;   /* sizeof(int[n]) is not a constant */
       return type_size(e->targ);
-    if (e->lhs->type)
+    }
+    if (e->lhs->type) {
+      if (type_is_vla(e->lhs->type))
+        break;
       return type_size(e->lhs->type);
+    }
     break;
   default:
     break;
   }
-  error("enumerator value is not a constant");
+  *ok = 0;
+  return 0;
+}
+
+static int eval_const(Node *e) {
+  int ok = 1;
+  int v = try_eval_const(e, &ok);
+  if (!ok)
+    error("enumerator value is not a constant");
+  return v;
 }
 
 /* enum { A, B = 5, ... }; values start at 0 and step by 1 unless
@@ -340,9 +362,12 @@ static Member *parse_struct_members(int is_union) {
       *link = m;
       link = &m->next;
       count++;
-      /* an incomplete array type ("int a[]") is a flexible array
-       * member: it must be the last member, and it needs at least
-       * one member before it (6.7.2.1) */
+      /* C forbids variable-length array members entirely (6.7.5.2);
+       * an incomplete array type ("int a[]") instead is a flexible
+       * array member: it must be the last member, and it needs at
+       * least one member before it (6.7.2.1) */
+      if (type_is_vla(mt))
+        error_at(tok->loc, "a struct cannot have a variable-length array member");
       if (mt->kind == TY_ARRAY && mt->array_len == 0)
         saw_fam = 1;
       if (!consume_punct(","))
@@ -1016,10 +1041,16 @@ static Node *parse_primary(void) {
     }
 
     Node *n = node_new(ND_SIZEOF);
-    if (ty)
+    if (ty) {
       n->targ = ty;
-    else
+      /* a variable-length array has no compile-time size; the
+       * dimension expressions come along for the ride and a runtime
+       * size is computed where it is used */
+      if (type_is_vla(ty))
+        n->vla_sz = vla_size_expr(ty);
+    } else {
       n->lhs = parse_unary();
+    }
     return n;
   }
 
@@ -1358,35 +1389,50 @@ static Type *parse_params(Type *ret) {
 
 /* array and parameter suffixes; "f[3](int)" is array of func */
 static Type *suffix_loop(Type *t) {
-  int dims[64], dim_n = 0;
+  Type *dims[64];
+  int dim_n = 0;
   for (;;) {
     if (consume_punct("[")) {
-      int len = 0;
+      /* each dimension is kept as a Type that carries either a
+       * constant length (array_len) or a size expression (vla_len);
+       * the throwaway "int [len]" carrier is never used as-is */
+      Type *dimty = NULL;
       if (at(TK_NUM)) {
-        len = tok->val;
+        dimty = array_of(type_new(TY_INT), tok->val);
         tok = tok->next;
       } else if (at(TK_IDENT)) {
         EnumConst *ec = find_enum_const(tok->name);
         if (ec) {
-          len = ec->val;
+          dimty = array_of(type_new(TY_INT), ec->val);
           tok = tok->next;
         }
-      } else if (!is_punct("]")) {
-        /* an arbitrary constant expression: "int a[ARRAY_LEN(b) == 3 ?
-         * 1 : -1];" parses like any primary expression, folds to an
-         * integer, and is discarded (checked at parse time only) */
-        len = eval_const(parse_assign());
+      }
+      if (!dimty && !is_punct("]")) {
+        /* an arbitrary expression: "int a[ARRAY_LEN(b) == 3 ? 1 :
+         * -1];" folds to an integer and is discarded; one that does
+         * not fold is a variable-length dimension, kept as an
+         * expression to evaluate at run time */
+        Node *e = parse_assign();
+        int ok = 1;
+        int len = try_eval_const(e, &ok);
+        if (ok)
+          dimty = array_of(type_new(TY_INT), len);
+        else
+          dimty = vla_array_of(type_new(TY_INT), e);
       }
       expect_punct("]");
+      if (!dimty)
+        dimty = array_of(type_new(TY_INT), 0);   /* "int a[]" */
       if (dim_n < 64)
-        dims[dim_n++] = len;
+        dims[dim_n++] = dimty;
       continue;
     }
     if (is_punct("(")) {
       /* a function suffix binds to whatever the dims have built so
        * far, so flush them first */
       for (int i = dim_n - 1; i >= 0; i--)
-        t = array_of(t, dims[i]);
+        t = dims[i]->vla_len ? vla_array_of(t, dims[i]->vla_len)
+                             : array_of(t, dims[i]->array_len);
       dim_n = 0;
       t = parse_params(t);
       continue;
@@ -1394,7 +1440,8 @@ static Type *suffix_loop(Type *t) {
     /* brackets read left to right are outermost first, so the type
      * nests them in reverse: x[2][4] is array[2] of array[4] of base */
     for (int i = dim_n - 1; i >= 0; i--)
-      t = array_of(t, dims[i]);
+      t = dims[i]->vla_len ? vla_array_of(t, dims[i]->vla_len)
+                           : array_of(t, dims[i]->array_len);
     return t;
   }
 }

@@ -13,6 +13,8 @@ static Type *type_zalloc(void) {
 /* sizes for the x86-64 SysV target. the -m16/-m32 legacy targets will
  * need this table replaced wholesale, that's why it's one function */
 int type_size(Type *t) {
+  if (type_is_vla(t))
+    error("variable-length array has no compile-time size");
   switch (t->kind) {
     case TY_VOID:   return 1;
     case TY_CHAR:   return 1;
@@ -160,8 +162,73 @@ Type *array_of(Type *base, int len) {
   t->kind = TY_ARRAY;
   t->base = base;
   t->array_len = len;
-  t->size = type_size(t);
+  /* a fixed dim wrapping a variable-length base has no compile-time
+   * size either */
+  t->size = type_is_vla(base) ? 0 : type_size(t);
   return t;
+}
+
+/* a variable-length array: len is evaluated at run time where the
+ * array appears; no compile-time size exists */
+Type *vla_array_of(Type *base, Node *len) {
+  Type *t = type_zalloc();
+  t->kind = TY_ARRAY;
+  t->base = base;
+  t->vla_len = len;
+  t->size = 0;
+  return t;
+}
+
+/* TRUE if t (or anything it is an array of) has a variable length */
+int type_is_vla(Type *t) {
+  while (t && t->kind == TY_ARRAY) {
+    if (t->vla_len)
+      return 1;
+    t = t->base;
+  }
+  return 0;
+}
+
+/* a run-time expression for the size of a variable-length array
+ * type, in bytes: every dimension multiplies, dynamic ones as their
+ * stored expression and fixed ones as a constant. the caller takes
+ * ownership of the tree (the vla_len subtrees stay shared) */
+Node *vla_size_expr(Type *t) {
+  static Type *intty;
+  if (!intty)
+    intty = type_new(TY_INT);
+  Node *acc = NULL;
+  while (t && t->kind == TY_ARRAY) {
+    Node *dim = t->vla_len;
+    if (!dim) {
+      Node *c = xmalloc(sizeof(Node));
+      c->kind = ND_NUM;
+      c->val = t->array_len;
+      c->type = intty;
+      dim = c;
+    }
+    if (!acc) {
+      acc = dim;
+    } else {
+      Node *n = xmalloc(sizeof(Node));
+      n->kind = ND_BIN;
+      n->op = '*';
+      n->lhs = acc;
+      n->rhs = dim;
+      acc = n;
+    }
+    t = t->base;
+  }
+  Node *c = xmalloc(sizeof(Node));
+  c->kind = ND_NUM;
+  c->val = type_size(t);
+  c->type = intty;
+  Node *n = xmalloc(sizeof(Node));
+  n->kind = ND_BIN;
+  n->op = '*';
+  n->lhs = acc;
+  n->rhs = c;
+  return n;
 }
 
 Type *func_type(Type *ret) {

@@ -30,6 +30,8 @@ struct Obj {
   char *symname;       /* emitted symbol, NULL unless mangled */
   Type *type;
   int offset;          /* rbp-relative slot for locals/params */
+  int size_off;        /* VLA: rbp-relative slot holding the size the
+                          declaration captured; 0 for everything else */
   int frame;           /* function: total frame size */
   int is_local;
   int is_global;
@@ -462,16 +464,30 @@ static void resolve_expr(Node *n) {
       resolve_expr(n->lhs);
       resolve_expr(n->rhs);
       if (n->lhs->type->kind == TY_ARRAY ||
-          n->lhs->type->kind == TY_PTR)
+          n->lhs->type->kind == TY_PTR) {
         n->type = n->lhs->type->base;
-      else
+        /* a[i] steps by a runtime stride when the element type is
+         * itself a variable-length array (int a[n][m]) */
+        if (type_is_vla(n->lhs->type->base)) {
+          n->vla_sz = vla_size_expr(n->lhs->type->base);
+          resolve_expr(n->vla_sz);
+        }
+      } else
         error("subscripted value is not an array or pointer");
       return;
     case ND_SIZEOF:
-      if (n->lhs)
+      if (n->lhs) {
         resolve_expr(n->lhs);
-      else
+        /* sizeof(vla) is a runtime value: fold the type's dimension
+         * expressions into a size tree and resolve them too; every
+         * one of those variables was declared before this point */
+        if (type_is_vla(n->lhs->type))
+          n->vla_sz = vla_size_expr(n->lhs->type);
+      } else {
         check_type_supported(n->targ);
+      }
+      if (n->vla_sz)
+        resolve_expr(n->vla_sz);
       n->type = type_new(TY_INT);
       return;
     case ND_VA_START:
@@ -489,6 +505,8 @@ static void resolve_expr(Node *n) {
        * expression's value is the object's address */
       if (scope == &base_scope)
         error("compound literal at global scope is not supported");
+      if (type_is_vla(n->targ))
+        error("compound literal of a variable-length array, unsupported");
       n->type = n->targ;
       n->init = n->elems;
       resolve_initializer(n);
@@ -961,6 +979,20 @@ static void resolve_stmt(Node *n) {
       check_type_supported(n->type);
       if (n->type->kind == TY_VOID)
         error("variable '%s' declared void", n->name);
+      if (type_is_vla(n->type)) {
+        /* a VLA has no compile-time size: no static storage, no
+         * initializer (6.7.5.2), and its dimension expressions have
+         * to be resolved so the allocation can evaluate them */
+        if (n->is_static)
+          error("variable '%s': a variable-length array cannot be static", n->name);
+        if (n->init)
+          error("variable '%s': a variable-length array cannot be initialized", n->name);
+        for (Type *dt = n->type; dt->kind == TY_ARRAY; dt = dt->base)
+          if (dt->vla_len)
+            resolve_expr(dt->vla_len);
+        n->vla_sz = vla_size_expr(n->type);
+        resolve_expr(n->vla_sz);
+      }
       if (n->init) {
         if (n->type->kind == TY_ARRAY &&
             n->init->kind != ND_INIT_LIST && n->init->kind != ND_STR)
@@ -997,8 +1029,14 @@ static void resolve_stmt(Node *n) {
         static_decls[static_decls_n++] = n;
       } else {
         o->is_local = 1;
-        cur_offset -= roundup(o->type->size, 8);
+        /* a VLA takes two 8-byte slots: a pointer to the storage the
+         * declaration carves out of the stack at run time, and the
+         * size it captured there; its size is 0 as a type */
+        int sz = type_is_vla(o->type) ? 16 : o->type->size;
+        cur_offset -= roundup(sz, 8);
         o->offset = cur_offset;
+        if (type_is_vla(o->type))
+          o->size_off = cur_offset + 8;
       }
       push_var(o);
       n->var = o;
@@ -1429,9 +1467,13 @@ static void gen_addr(Node *n) {
   switch (n->kind) {
     case ND_VAR: {
       Obj *o = n->var;
-      if (o->is_local)
-        fprintf(out, "  lea %d(%%rbp), %%rax\n", o->offset);
-      else
+      if (o->is_local) {
+        if (type_is_vla(o->type))
+          /* the slot holds the pointer the declaration stored */
+          fprintf(out, "  mov %d(%%rbp), %%rax\n", o->offset);
+        else
+          fprintf(out, "  lea %d(%%rbp), %%rax\n", o->offset);
+      } else
         fprintf(out, "  lea %s(%%rip), %%rax\n", o->symname ? o->symname : o->name);
       return;
     }
@@ -1448,9 +1490,19 @@ static void gen_addr(Node *n) {
       gen_expr(n->lhs);
       fprintf(out, "  push %%rax\n");
       gen_expr(n->rhs);
-      int sz = type_size(n->lhs->type->base);
-      if (sz > 1)
-        fprintf(out, "  imul $%d, %%rax, %%rax\n", sz);
+      if (n->vla_sz) {
+        /* a[i], where the element type is itself variable-length
+         * (int a[n][m]): the stride is m's byte size, evaluated now */
+        fprintf(out, "  push %%rax\n");
+        gen_expr(n->vla_sz);
+        fprintf(out, "  mov %%rax, %%rcx\n");
+        fprintf(out, "  pop %%rax\n");
+        fprintf(out, "  imul %%rcx, %%rax\n");
+      } else {
+        int sz = type_size(n->lhs->type->base);
+        if (sz > 1)
+          fprintf(out, "  imul $%d, %%rax, %%rax\n", sz);
+      }
       fprintf(out, "  pop %%rdi\n");
       fprintf(out, "  add %%rdi, %%rax\n");
       return;
@@ -2131,6 +2183,15 @@ static void gen_expr(Node *n) {
         load(n->type);
       return;
     case ND_SIZEOF:
+      if (n->vla_sz) {
+        if (n->lhs && n->lhs->kind == ND_VAR && n->lhs->var->size_off)
+          /* sizeof of a declared VLA is the size its declaration
+           * captured, exactly as gcc computes it */
+          fprintf(out, "  mov %d(%%rbp), %%rax\n", n->lhs->var->size_off);
+        else
+          gen_expr(n->vla_sz);
+        return;
+      }
       if (n->lhs)
         fprintf(out, "  mov $%d, %%rax\n", type_size(n->lhs->type));
       else
@@ -2352,6 +2413,24 @@ static void gen_stmt(Node *n) {
         gen_stmt(s);
       return;
     case ND_DECL:
+      /* a VLA gets its storage right here, under the current stack
+       * pointer: sub rsp, align16(size), then park the base in the
+       * variable's 8-byte slot. the size is re-evaluated (its
+       * variables may have changed since the declaration); and since
+       * it is 16-aligned, rsp stays 16-aligned for any call that
+       * follows. the epilogue discards the space by resetting rsp */
+      if (type_is_vla(n->type)) {
+        /* capture the size as the C standard's gcc does: sizeof on
+         * the declared variable sees the size it had here, even if
+         * the dimension variables change afterwards */
+        gen_expr(n->vla_sz);
+        fprintf(out, "  mov %%rax, %d(%%rbp)\n", n->var->size_off);
+        fprintf(out, "  add $15, %%rax\n");
+        fprintf(out, "  and $-16, %%rax\n");
+        fprintf(out, "  sub %%rax, %%rsp\n");
+        fprintf(out, "  mov %%rsp, %d(%%rbp)\n", n->var->offset);
+        return;
+      }
       /* C says uninitialized locals are garbage, so only the init
        * produces code; a static's init already landed in .data/.bss */
       if (n->init && !n->is_static) {

@@ -33,6 +33,9 @@ struct Type {
   int size;          /* bytes per target ABI */
   int align;         /* alignment, same ABI */
   int array_len;     /* TY_ARRAY only */
+  Node *vla_len;     /* TY_ARRAY only: non-constant size (a VLA); the
+                        expression is evaluated where the array is
+                        declared and again by sizeof */
   Type *base;        /* pointee / element type */
   Type *ret;         /* TY_FUNC return type */
   Node *params;      /* TY_FUNC params, ND_DECL nodes linked by next */
@@ -44,6 +47,9 @@ struct Type {
 Type *type_new(TypeKind k);
 Type *ptr_to(Type *base);
 Type *array_of(Type *base, int len);
+Type *vla_array_of(Type *base, Node *len);
+int type_is_vla(Type *t);
+Node *vla_size_expr(Type *t);
 Type *func_type(Type *ret);
 Type *struct_type(void);
 Type *union_type(void);
@@ -130,6 +136,9 @@ struct Node {
   Node *init;                  /* ND_DECL / ND_FOR init */
   Node *elems;                 /* ND_INIT_LIST, linked by next */
   Node *inc;                   /* ND_FOR */
+  Node *vla_sz;                /* ND_SIZEOF: a run-time size for a
+                                  variable-length array operand; NULL
+                                  means a compile-time constant */
   Node *next;
   int label;                   /* ND_CASE: jump label, filled by codegen */
   char *name;                  /* identifier */

@@ -41,6 +41,13 @@ The language subset grows all the time. As of now it handles:
   -1 on x86-64, exactly as gcc computes it.
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
+- Variable-length arrays: `int a[n]` with any dimension expression.
+  The storage is carved out of the stack where the array is declared
+  and freed again at return; `sizeof` on the declared variable is the
+  size its declaration captured (as gcc does), while slices,
+  strides, and nested dims are computed at run time. No initializers,
+  no `static` VLAs, no VLA struct members; a VLA parameter decays to
+  a pointer, as in C.
 - Struct, union, and enum types
 - Flexible array members: the last member of a struct may be an
   incomplete array (`int a[]`); it adds nothing to `sizeof`
