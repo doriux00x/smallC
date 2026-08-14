@@ -34,7 +34,7 @@ int type_size(Type *t) {
 
 /* SysV alignment: scalars align to their size, arrays to their
  * element, structs to their widest member */
-static int type_align(Type *t) {
+int type_align(Type *t) {
   switch (t->kind) {
     case TY_CHAR:   return 1;
     case TY_SHORT:  return 2;
@@ -93,6 +93,8 @@ void layout_struct(Type *t) {
         if (unit_off >= 0)
           off = unit_off + unit_size;
         int a = type_align(m->type);
+        if (m->align > a)
+          a = m->align;
         off = (off + a - 1) / a * a;
         unit_off = off;
         unit_bits = 0;
@@ -112,6 +114,8 @@ void layout_struct(Type *t) {
       unit_bits = 0;
     }
     int a = type_align(m->type);
+    if (m->align > a)
+      a = m->align;
     off = (off + a - 1) / a * a;
     m->offset = off;
     off += m->type->size;
@@ -134,6 +138,8 @@ void layout_union(Type *t) {
     if (m->type->size > max_size)
       max_size = m->type->size;
     int a = type_align(m->type);
+    if (m->align > a)
+      a = m->align;
     if (a > max_align)
       max_align = a;
   }
@@ -248,6 +254,7 @@ int is_const_expr(Node *n) {
   switch (n->kind) {
     case ND_NUM:
     case ND_SIZEOF:
+    case ND_ALIGNOF:
       return 1;
     case ND_CAST:
       return is_const_expr(n->lhs);
@@ -276,6 +283,10 @@ CVal const_fold(Node *n) {
       if (n->lhs)
         return cv_int(type_size(n->lhs->type));
       return cv_int(type_size(n->targ));
+    case ND_ALIGNOF:
+      if (n->lhs)
+        return cv_int(type_align(n->lhs->type));
+      return cv_int(type_align(n->targ));
     case ND_CAST:
       if (n->targ->kind == TY_FLOAT || n->targ->kind == TY_DOUBLE) {
         CVal c = const_fold(n->lhs);

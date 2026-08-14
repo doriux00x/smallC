@@ -179,6 +179,14 @@ static void dump_expr(Node *n, int d) {
         printf("sizeof type = %d bytes\n", n->targ->size);
       }
       return;
+    case ND_ALIGNOF:
+      if (n->lhs) {
+        printf("alignof\n");
+        dump_expr(n->lhs, d + 1);
+      } else {
+        printf("alignof type = %d bytes\n", n->targ->align);
+      }
+      return;
     case ND_CAST:
       printf("cast to ");
       dump_type(n->targ);

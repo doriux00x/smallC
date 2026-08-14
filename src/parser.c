@@ -90,7 +90,7 @@ struct Tag {
 
 static Tag *tags;
 
-static Type *parse_typespec(void);
+static Type *parse_typespec(int *alignas_ret);
 static Type *declarator(Type *base, char **name);
 static Node *parse_expr(void);
 static Node *parse_assign(void);
@@ -330,7 +330,8 @@ static Member *parse_struct_members(int is_union) {
       error_at(tok->loc, "unexpected EOF inside struct definition");
     if (saw_fam)
       error_at(tok->loc, "flexible array member must be the last member");
-    Type *base = parse_typespec();
+    int alignas = 0;
+    Type *base = parse_typespec(&alignas);
     for (;;) {
       char *name;
       Type *mt = declarator(base, &name);
@@ -338,6 +339,7 @@ static Member *parse_struct_members(int is_union) {
       memset(m, 0, sizeof(Member));
       m->name = name;
       m->type = mt;
+      m->align = alignas;
       if (consume_punct(":")) {
         /* a bit-field; the width is an integer constant expression.
          * zero width is the anonymous alignment marker */
@@ -356,6 +358,8 @@ static Member *parse_struct_members(int is_union) {
           error_at(tok->loc, "named bit-field must have a non-zero width");
         m->is_bitfield = 1;
         m->bit_width = cv.val;
+        if (alignas)
+          error_at(tok->loc, "alignment specifier on a bit-field");
       } else if (!name) {
         error_at(tok->loc, "struct members must be named");
       }
@@ -392,19 +396,38 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_DOUBLE || t->kind == TK_BOOL || t->kind == TK_STRUCT || t->kind == TK_ENUM ||
          t->kind == TK_UNION || t->kind == TK_CONST || t->kind == TK_VOLATILE ||
          t->kind == TK_STATIC || t->kind == TK_EXTERN || t->kind == TK_REGISTER ||
+         t->kind == TK_ALIGNAS ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
 
-/* any run of type keywords: "unsigned long long" etc. */
-static Type *parse_typespec(void) {
+/* any run of type keywords: "unsigned long long" etc. _Alignas is a
+ * declaration-specifier that can sit anywhere in the run ("_Alignas(16)
+ * int x" or "int _Alignas(16) x"); its value rides out through
+ * alignas_ret (NULL means the context is a cast / sizeof / parameter,
+ * where the specifier is illegal and is rejected) */
+static Type *parse_typespec(int *alignas_ret) {
   int is_unsigned = 0;
   int is_const = 0;
   int is_volatile = 0;
   int longs = 0;
+  int alignas = 0;
   Type *t = NULL;
 
   for (;;) {
+    if (consume(TK_ALIGNAS)) {
+      expect_punct("(");
+      Node *a = parse_assign();
+      expect_punct(")");
+      if (!is_const_expr(a))
+        error_at(tok->loc, "_Alignas value is not a constant");
+      int v = const_fold(a).val;
+      if (v < 1 || (v & (v - 1)) != 0)
+        error_at(tok->loc, "requested alignment is not a positive power of 2");
+      if (v > alignas)
+        alignas = v;
+      continue;
+    }
     if (consume(TK_CONST))     { is_const = 1;    continue; }
     if (consume(TK_VOLATILE))  { is_volatile = 1; continue; }
     if (consume(TK_UNSIGNED))  { is_unsigned = 1; continue; }
@@ -442,6 +465,10 @@ static Type *parse_typespec(void) {
       t = type_new(TY_INT);
       t->is_const = is_const;
       t->is_volatile = is_volatile;
+      if (alignas_ret)
+        *alignas_ret = alignas;
+      else if (alignas)
+        error_at(tok->loc, "alignment specifier not allowed here");
       return t;
     }
     if (consume(TK_UNION)) {
@@ -551,6 +578,10 @@ static Type *parse_typespec(void) {
   t->is_unsigned = is_unsigned;
   t->is_const = is_const;
   t->is_volatile = is_volatile;
+  if (alignas_ret)
+    *alignas_ret = alignas;
+  else if (alignas)
+    error_at(tok->loc, "alignment specifier not allowed here");
   return t;
 }
 
@@ -823,7 +854,7 @@ static Node *parse_unary(void) {
   if (is_punct("(") && tok->next && is_typespec_start(tok->next)) {
     tok = tok->next;
     char *dummy;
-    Type *ty = declarator(parse_typespec(), &dummy);
+    Type *ty = declarator(parse_typespec(NULL), &dummy);
     expect_punct(")");
     if (is_punct("{")) {
       Node *n = node_new(ND_COMP_LIT);
@@ -983,7 +1014,7 @@ static Node *parse_va_arg(void) {
   Node *ap = parse_assign();
   expect_punct(",");
   char *dummy;
-  Type *ty = declarator(parse_typespec(), &dummy);
+  Type *ty = declarator(parse_typespec(NULL), &dummy);
   expect_punct(")");
 
   if (ty->kind == TY_VOID || ty->kind == TY_STRUCT || ty->kind == TY_UNION)
@@ -1031,13 +1062,30 @@ static Node *parse_va_copy(void) {
 }
 
 static Node *parse_primary(void) {
+  if (at(TK_ALIGNOF)) {
+    tok = tok->next;
+    Type *ty = NULL;
+    if (is_punct("(") && tok->next && is_typespec_start(tok->next)) {
+      tok = tok->next;
+      char *dummy;
+      ty = declarator(parse_typespec(NULL), &dummy);
+      expect_punct(")");
+    }
+    Node *n = node_new(ND_ALIGNOF);
+    if (ty)
+      n->targ = ty;
+    else
+      n->lhs = parse_unary();
+    return n;
+  }
+
   if (at(TK_SIZEOF)) {
     tok = tok->next;
     Type *ty = NULL;
     if (is_punct("(") && tok->next && is_typespec_start(tok->next)) {
       tok = tok->next;
       char *dummy;
-      ty = declarator(parse_typespec(), &dummy);
+      ty = declarator(parse_typespec(NULL), &dummy);
       expect_punct(")");
     }
 
@@ -1377,7 +1425,7 @@ static Type *parse_params(Type *ret) {
           break;
         }
         consume(TK_REGISTER);   /* hint, ignored like the locals */
-        Type *pt = parse_typespec();
+        Type *pt = parse_typespec(NULL);
         char *pname = NULL;
         pt = declarator(pt, &pname);   /* abstract declarators allowed */
 
@@ -1624,7 +1672,10 @@ static void parse_typedef(void) {
   for (;;) {
     Token *start = tok;
     char *name;
-    Type *t = parse_typespec();
+    int alignas = 0;
+    Type *t = parse_typespec(&alignas);
+    if (alignas)
+      error_at(tok->loc, "alignment specifier on a typedef");
     /* the typespec consumed nothing, so a known typedef-name at the
      * front means no type was given ("typedef T;") */
     if (tok == start && start->kind == TK_IDENT && find_typedef(start->name))
@@ -1690,7 +1741,11 @@ static Node *parse_declaration(void) {
   }
   Node *first = NULL;
   Node **link = &first;
-  Type *base = parse_typespec();
+  int alignas = 0;
+  /* _Alignas can also be a function-return specifier ("_Alignas(16)
+   * int f(void)"), which C forbids; the collector below catches the
+   * object case and the function case is rejected after parsing */
+  Type *base = parse_typespec(&alignas);
 
   for (;;) {
     Type *t;
@@ -1698,6 +1753,9 @@ static Node *parse_declaration(void) {
     skip_attribute();
     n->is_static = is_static;
     n->is_extern = is_extern;
+    n->align = alignas;
+    if (n->kind == ND_FUNC && alignas)
+      error_at(tok->loc, "alignment specified for function '%s'", n->name);
     if (!n->name && n->kind == ND_DECL) {
       /* a type-only declaration ("struct point {...};") carries
        * no storage, just a tag definition */

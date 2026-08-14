@@ -32,6 +32,7 @@ struct Obj {
   int offset;          /* rbp-relative slot for locals/params */
   int size_off;        /* VLA: rbp-relative slot holding the size the
                           declaration captured; 0 for everything else */
+  int align;           /* _Alignas on the object; 0 = natural (type) */
   int frame;           /* function: total frame size */
   int is_local;
   int is_global;
@@ -100,6 +101,15 @@ static void push_var(Obj *o) {
 
 static int roundup(int n, int m) {
   return (n + m - 1) / m * m;
+}
+
+/* snap a (negative, growing-down) frame offset down to the next
+ * multiple of a, so an over-aligned object keeps its required
+ * alignment even when the previous reservation only aligned to 8 */
+static void align_snap(int *off, int a) {
+  int r = *off % a;         /* negative in C for a negative *off */
+  if (r)
+    *off -= (a + r) % a;
 }
 
 static void check_type_supported(Type *t) {
@@ -454,7 +464,9 @@ static void resolve_expr(Node *n) {
          * buffer's address. global scope never reaches codegen */
         Obj *o = new_obj("~ret", n->type);
         o->is_local = 1;
-        cur_offset -= roundup(o->type->size, 8);
+        int a = type_align(o->type) > 8 ? type_align(o->type) : 8;
+        cur_offset -= roundup(o->type->size, a);
+        align_snap(&cur_offset, a);
         o->offset = cur_offset;
         n->var = o;
       }
@@ -490,6 +502,19 @@ static void resolve_expr(Node *n) {
         resolve_expr(n->vla_sz);
       n->type = type_new(TY_INT);
       return;
+    case ND_ALIGNOF:
+      if (n->lhs) {
+        resolve_expr(n->lhs);
+        if (n->lhs->kind == ND_VAR && n->lhs->var && n->lhs->var->align)
+          n->val = n->lhs->var->align;
+        else
+          n->val = type_align(n->lhs->type);
+      } else {
+        check_type_supported(n->targ);
+        n->val = type_align(n->targ);
+      }
+      n->type = type_new(TY_INT);
+      return;
     case ND_VA_START:
       resolve_expr(n->lhs);
       n->type = type_new(TY_INT);
@@ -513,7 +538,9 @@ static void resolve_expr(Node *n) {
       {
         Obj *o = new_obj("~lit", n->type);
         o->is_local = 1;
-        cur_offset -= roundup(o->type->size, 8);
+        int a = type_align(o->type) > 8 ? type_align(o->type) : 8;
+        cur_offset -= roundup(o->type->size, a);
+        align_snap(&cur_offset, a);
         o->offset = cur_offset;
         push_var(o);
         n->var = o;
@@ -1028,6 +1055,7 @@ static void resolve_stmt(Node *n) {
         }
       }
       Obj *o = new_obj(n->name, n->type);
+      o->align = n->align;
       if (n->is_static) {
         /* a function-local static is a data symbol like a global; the
          * name gets mangled so the same identifier in two functions
@@ -1050,7 +1078,13 @@ static void resolve_stmt(Node *n) {
          * declaration carves out of the stack at run time, and the
          * size it captured there; its size is 0 as a type */
         int sz = type_is_vla(o->type) ? 16 : o->type->size;
-        cur_offset -= roundup(sz, 8);
+        int a = type_align(o->type);
+        if (o->align > a)
+          a = o->align;
+        if (a < 8)
+          a = 8;
+        cur_offset -= roundup(sz, a);
+        align_snap(&cur_offset, a);
         o->offset = cur_offset;
         if (type_is_vla(o->type))
           o->size_off = cur_offset + 8;
@@ -1150,6 +1184,7 @@ void resolve(Node *prog) {
     } else if (n->kind == ND_DECL) {
       o = new_obj(n->name, n->type);
       o->is_global = 1;
+      o->align = n->align;
     } else {
       error("internal: unexpected top-level node");
       return;
@@ -1220,7 +1255,9 @@ void resolve(Node *prog) {
       }
       if (p->name && strcmp(p->name, "~ret") == 0)
         cur_sret = po;
-      cur_offset -= roundup(po->type->size, 8);
+      int a = type_align(po->type) > 8 ? type_align(po->type) : 8;
+      cur_offset -= roundup(po->type->size, a);
+      align_snap(&cur_offset, a);
       po->offset = cur_offset;
       push_var(po);
       p->var = po;
@@ -1233,6 +1270,7 @@ void resolve(Node *prog) {
       Obj *vo = new_obj("~va", array_of(type_new(TY_CHAR), 176));
       vo->is_local = 1;
       cur_offset -= roundup(vo->type->size, 8);
+      align_snap(&cur_offset, 8);
       vo->offset = cur_offset;
       push_var(vo);
       n->val = vo->offset;
@@ -2214,6 +2252,9 @@ static void gen_expr(Node *n) {
       else
         fprintf(out, "  mov $%d, %%rax\n", type_size(n->targ));
       return;
+    case ND_ALIGNOF:
+      fprintf(out, "  mov $%d, %%rax\n", n->val);
+      return;
     case ND_VA_START: {
       /* ap gets the register counts va_start computed at parse time,
        * plus the addresses of the first stack vararg (16(%rbp)..)
@@ -2641,6 +2682,17 @@ static void emit_string(Node *n) {
   section(".text");
 }
 
+static void emit_data_align(Node *n) {
+  /* an object over-aligned beyond its natural storage size needs an
+   * explicit .balign (8 is derived anyway from the vector types the
+   * backend already emits); a power of two */
+  int a = type_align(n->type);
+  if (n->align > a)
+    a = n->align;
+  if (a > 8)
+    fprintf(out, "  .balign %d\n", a);
+}
+
 static void gen_data(Node *n) {
   /* storage class: static loses the .globl export, extern emits no
    * storage at all (the symbol is expected elsewhere at link time) */
@@ -2655,6 +2707,7 @@ static void gen_data(Node *n) {
     section(".data");
     if (exported)
       fprintf(out, "  .globl %s\n", sym);
+    emit_data_align(n);
     fprintf(out, "%s:\n", sym);
     /* out-of-order designators can leave several leaves on one
      * offset; each offset keeps its last (winning) leaf, and the
@@ -2738,6 +2791,7 @@ static void gen_data(Node *n) {
     section(".data");
     if (exported)
       fprintf(out, "  .globl %s\n", sym);
+    emit_data_align(n);
     fprintf(out, "%s:\n", sym);
     fprintf(out, "  .quad %s\n", n->init->var->name);
     return;
@@ -2747,6 +2801,7 @@ static void gen_data(Node *n) {
     section(".data");
     if (exported)
       fprintf(out, "  .globl %s\n", sym);
+    emit_data_align(n);
     fprintf(out, "%s:\n", sym);
     Obj *tgt = n->init->lhs->var;
     fprintf(out, "  .quad %s\n", tgt->symname ? tgt->symname : tgt->name);
@@ -2756,6 +2811,7 @@ static void gen_data(Node *n) {
   section(".data");
   if (exported)
     fprintf(out, "  .globl %s\n", sym);
+  emit_data_align(n);
   fprintf(out, "%s:\n", sym);
   if (n->type->kind == TY_DOUBLE) {
     double d = v.is_float ? v.fval : (double)v.val;
@@ -2931,6 +2987,7 @@ void codegen(Node *prog, char *outpath) {
         section(".bss");
         if (!n->is_static)
           fprintf(out, "  .globl %s\n", n->name);
+        emit_data_align(n);
         fprintf(out, "%s:\n", n->name);
         fprintf(out, "  .zero %d\n", type_size(n->type));
       }
@@ -2943,6 +3000,7 @@ void codegen(Node *prog, char *outpath) {
       gen_data(s);
     else {
       section(".bss");
+      emit_data_align(s);
       fprintf(out, "%s:\n", s->var->symname);
       fprintf(out, "  .zero %d\n", type_size(s->type));
     }

@@ -20,6 +20,7 @@ struct Member {
   int is_bitfield;       /* int x : 3; */
   int bit_offset;        /* bit position within the unit */
   int bit_width;         /* bits used; 0 = just an alignment marker */
+  int align;             /* _Alignas on this member; 0 = natural (type) */
 };
 
 struct Type {
@@ -56,6 +57,7 @@ Type *union_type(void);
 void layout_struct(Type *t);
 void layout_union(Type *t);
 int type_size(Type *t);
+int type_align(Type *t);
 
 /* an integer or real constant value produced by const_fold() */
 typedef struct {
@@ -103,6 +105,7 @@ typedef enum {
   ND_COMP_LIT,       /* C99 (T){...}; targ is T, elems the brace list */
   ND_DESIG,          /* .name = v / [idx] = v in a brace list; name
                         or lhs the target, then the value or a chain */
+  ND_ALIGNOF,        /* _Alignof expr (lhs) or type (targ) */
 } NodeKind;
 
 /* operator codes for ND_BIN/ND_UNARY/ND_ASSIGN.
@@ -160,6 +163,7 @@ struct Node {
   int bit_width;
   int is_static;               /* ND_DECL / ND_FUNC: static storage */
   int is_extern;               /* ND_DECL / ND_FUNC: extern class */
+  int align;                   /* ND_DECL: _Alignas, 0 = natural (type) */
   Obj *var;                    /* resolved symbol, ND_VAR / ND_STR;
                                   ND_CALL: hidden struct return buffer;
                                   ND_RETURN: the function's "~ret" param */
