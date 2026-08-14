@@ -31,7 +31,8 @@ The language subset grows all the time. As of now it handles:
   Backslash-newline splicing works everywhere the standard does it:
   between tokens, in comments, and inside string and character
   literals.
-- Floating point: float and double, with SSE codegen
+- Floating point: float and double, with SSE codegen, and hex float
+  literals (`0x1.8p3`, `0x1p4`) with the f/L suffixes
 - Pointers, arrays, and full declarator grammar (function pointers
   included)
 - Struct, union, and enum types

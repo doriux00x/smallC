@@ -37,6 +37,7 @@ long strtol(const char *s, char **end, int base);
 int isalpha(int c);
 int isalnum(int c);
 int isdigit(int c);
+int isxdigit(int c);
 int isspace(int c);
 int tolower(int c);
 

@@ -66,12 +66,20 @@ static char decode_escape(char *start, char **pp) {
   return c;
 }
 
-/* 1.5 / 1e3 / 1.5e-3 / .5 are floats; hex stays on the strtol path.
+/* 1.5 / 1e3 / 1.5e-3 / .5 are floats; a 0x literal is a float when
+ * it has a '.' or a p/P binary exponent (0x1.8p3, 0x1p4, 0x.8p1),
+ * otherwise it stays on the strtol path.
  * requires a digit after '.' unless an exponent picks up the slack
  * ("1.e3" is legal C, so is it here) */
 static int is_float_lit(char *p) {
-  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
-    return 0;
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+    p += 2;
+    while (isxdigit((unsigned char)*p))
+      p++;
+    if (*p == '.')
+      return 1;
+    return *p == 'p' || *p == 'P';
+  }
   if (p[0] == '.')
     return isdigit((unsigned char)p[1]);
   while (isdigit((unsigned char)*p))

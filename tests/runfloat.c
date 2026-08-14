@@ -21,6 +21,9 @@ double gnot = !0.0;
 double gd2 = (double)3;
 double gbss;
 float gbssf;
+double ghex = 0x1.8p3;      /* hex float literals, folded at compile time */
+float ghexf = 0x1p4f;
+double ghexn = -0x1p-2;
 
 // mixed int/double arguments, all four register classes
 double add4(int a, double b, int c, double d) {
@@ -184,6 +187,24 @@ int main() {
   *gp = 1.25;
   if (gd != 1.25) return 79;
   printf("%f %f\n", gd, gf + 1.5f);
+
+  // hex float literals: 0x<mantissa>p<binary exponent>
+  if (0x1p4 != 16.0) return 80;
+  if (0x1.8p3 != 12.0) return 81;
+  if (0x1.8p1 != 3.0) return 82;
+  if (0x.8p1 != 1.0) return 83;
+  if (0x1p-2 != 0.25) return 84;
+  if (0x0p0 != 0.0) return 85;
+  if (-0x1p2 != -4.0) return 86;
+  if (0x1p10 + 0x1p10 != 2048.0) return 87;
+  if (0x1.8p3 / 3.0 != 4.0) return 88;
+  if (0x1p4f != 16.0f) return 89;
+  if (0x1.8p3L != 12.0L) return 90;
+  if (0xdeadbeef != 3735928559) return 91;   // hex without . or p stays int
+  if (0x1e3 != 483) return 92;               // e is a hex digit, not an exponent
+  if (ghex != 12.0) return 93;
+  if (ghexf != 16.0f) return 94;
+  if (ghexn != -0.25) return 95;
 
   printf("float ok\n");
   return 0;
