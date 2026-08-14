@@ -176,7 +176,10 @@ static Node *cast_of(Node *n, Type *to) {
 static void resolve_num(Node *n) {
   if (n->is_float)
     n->type = n->is_f ? type_new(TY_FLOAT) : type_new(TY_DOUBLE);
-  else if (n->is_unsigned) {
+  else if (n->is_long) {
+    n->type = type_new(TY_LONG);
+    n->type->is_unsigned = n->is_unsigned;
+  } else if (n->is_unsigned) {
     n->type = type_new(TY_INT);
     n->type->is_unsigned = 1;
   } else

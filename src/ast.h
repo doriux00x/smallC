@@ -138,7 +138,8 @@ struct Node {
   int val;                     /* ND_NUM, int value */
   int is_float;                /* ND_NUM: floating value in fval */
   int is_f;                    /* ND_NUM: the f/F suffix, a float literal */
-  int is_unsigned;             /* ND_NUM: hex value past INT_MAX */
+  int is_unsigned;             /* ND_NUM: hex value past INT_MAX, or U suffix */
+  int is_long;                 /* ND_NUM: the L or LL suffix */
   double fval;                 /* ND_NUM, float value */
   int op;                      /* operator code */
   int is_pntr;                 /* ND_MEMBER: "->" vs "." */

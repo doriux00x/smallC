@@ -13,7 +13,9 @@ linked with your system `cc`.
 
 The language subset grows all the time. As of now it handles:
 
-- Integers: char, short, int, long, with signed and unsigned
+- Integers: char, short, int, long and long long, with signed and
+  unsigned, and the C99 literal suffixes `U`, `L`, `LL` (in either
+  order and case; `1.5L` long doubles ride on double)
 - _Bool, with proper semantics: any nonzero value stored into one
   becomes 1, so `_Bool b = 7;` gives you a 1. `bool`, `true` and
   `false` are not built in; `#define bool _Bool` and so on if you
@@ -92,6 +94,9 @@ Known gaps, in no particular order:
   no 32-bit.
 - Global float/double initializers must be constant expressions,
   same as C requires.
+- Integer literals are read as 32-bit quantities, so a value beyond
+  `0xffffffff` cannot be spelled directly; build it with a shift
+  (`1UL << 40`), which is what the `L` suffix helps with.
 
 If something is missing that you need, the parser is small and the
 features above show how each piece fits together, so adding one is

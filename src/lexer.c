@@ -111,6 +111,30 @@ static Token *read_number(char *start, char **pp, int line, int at_bol, int spac
     p++;
     t->is_float = 1;
     t->is_f = 1;
+  } else if (*p == 'l' || *p == 'L') {
+    if (t->is_float) {
+      /* 1.5L is a long double, which we only have as double */
+      p++;
+    } else {
+      /* the integer suffix, in either order: L or LL, and U */
+      t->is_long = 1;
+      p++;
+      if (*p == 'l' || *p == 'L')
+        p++;
+    }
+  } else if (*p == 'u' || *p == 'U') {
+    t->is_unsigned = 1;
+    p++;
+    if (*p == 'l' || *p == 'L') {
+      t->is_long = 1;
+      p++;
+      if (*p == 'l' || *p == 'L')
+        p++;
+    }
+  }
+  if (!t->is_float && (*p == 'u' || *p == 'U')) {
+    t->is_unsigned = 1;
+    p++;
   }
   t->len = p - start;
   *pp = p;

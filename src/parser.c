@@ -1033,6 +1033,7 @@ static Node *parse_primary(void) {
     } else {
       n->val = t->val;
       n->is_unsigned = t->is_unsigned;
+      n->is_long = t->is_long;
     }
     return n;
   }
