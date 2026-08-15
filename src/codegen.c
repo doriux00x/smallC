@@ -1095,6 +1095,40 @@ static void check_case(Node *c, void *arg) {
   cs->n++;
 }
 
+/* a _Noreturn function must not return; a return statement anywhere
+ * in the body would be the compiler writing code that ends in
+ * undefined behavior (C11 6.7.4p8), so it is rejected out of hand */
+static int contains_return(Node *s) {
+  for (; s; s = s->next) {
+    switch (s->kind) {
+      case ND_RETURN:
+        return 1;
+      case ND_BLOCK:
+      case ND_SWITCH:
+        if (contains_return(s->body))
+          return 1;
+        break;
+      case ND_IF:
+        if (contains_return(s->then))
+          return 1;
+        if (s->els && contains_return(s->els))
+          return 1;
+        break;
+      case ND_WHILE:
+      case ND_DO_WHILE:
+      case ND_FOR:
+      case ND_CASE:
+      case ND_LABEL:
+        if (contains_return(s->then))
+          return 1;
+        break;
+      default:
+        break;
+    }
+  }
+  return 0;
+}
+
 static void resolve_stmt(Node *n) {
   switch (n->kind) {
     case ND_BLOCK:
@@ -1365,6 +1399,8 @@ void resolve(Node *prog) {
       cur_va_off = vo->offset;
     }
     resolve_block(n->body);
+    if (n->is_noreturn && contains_return(n->body))
+      error("function '%s' declared _Noreturn should not return", n->name);
     leave_scope();
     n->var->frame = roundup(-cur_offset, 16);
   }

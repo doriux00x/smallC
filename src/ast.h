@@ -170,6 +170,8 @@ struct Node {
   int bit_width;
   int is_static;               /* ND_DECL / ND_FUNC: static storage */
   int is_extern;               /* ND_DECL / ND_FUNC: extern class */
+  int is_inline;               /* ND_FUNC: the inline function specifier */
+  int is_noreturn;             /* ND_FUNC: the _Noreturn function specifier */
   int align;                   /* ND_DECL: _Alignas, 0 = natural (type) */
   Obj *var;                    /* resolved symbol, ND_VAR / ND_STR;
                                   ND_CALL: hidden struct return buffer;

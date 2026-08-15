@@ -397,6 +397,7 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_UNION || t->kind == TK_CONST || t->kind == TK_VOLATILE ||
          t->kind == TK_STATIC || t->kind == TK_EXTERN || t->kind == TK_REGISTER ||
          t->kind == TK_ALIGNAS ||
+         t->kind == TK_INLINE || t->kind == TK_RESTRICT || t->kind == TK_NORETURN ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -430,6 +431,7 @@ static Type *parse_typespec(int *alignas_ret) {
     }
     if (consume(TK_CONST))     { is_const = 1;    continue; }
     if (consume(TK_VOLATILE))  { is_volatile = 1; continue; }
+    if (consume(TK_RESTRICT))  { continue; }   /* no-alias hint, ignored */
     if (consume(TK_UNSIGNED))  { is_unsigned = 1; continue; }
     if (consume(TK_SIGNED))    { continue; }
     if (consume(TK_LONG))      { longs++;         continue; }
@@ -1597,6 +1599,8 @@ static Type *declarator(Type *base, char **name) {
       t->is_const = 1;   /* "char * const p": the pointer is const */
     if (consume(TK_VOLATILE))
       t->is_volatile = 1;   /* "char * volatile p": the pointer is volatile */
+    consume(TK_RESTRICT);   /* "char * restrict p": a no-alias hint the
+                               backend cannot use, dropped at codegen */
   }
 
   if (consume_punct("(")) {
@@ -1784,11 +1788,14 @@ static void parse_static_assert(void) {
 }
 
 static Node *parse_declaration(void) {
-  /* storage class prefixes: the flags live on the produced nodes;
-   * typedef with a storage class is rejected below. register is a
-   * hint the backend ignores (every local already lives in the
-   * frame and spills to memory only on call), so it sets no flag */
+  /* storage class and function specifiers: the flags live on the
+   * produced nodes; typedef with a storage class is rejected below.
+   * register is a hint the backend ignores (every local already
+   * lives in the frame and spills to memory only on call), so it
+   * sets no flag. inline and _Noreturn are function-specifiers, so
+   * applying them to an object is rejected after the declarator */
   int is_static = 0, is_extern = 0, is_reg = 0;
+  int is_inline = 0, is_noreturn = 0;
   for (;;) {
     if (consume(TK_STATIC))
       is_static = 1;
@@ -1796,19 +1803,23 @@ static Node *parse_declaration(void) {
       is_extern = 1;
     else if (consume(TK_REGISTER))
       is_reg = 1;
+    else if (consume(TK_INLINE))
+      is_inline = 1;
+    else if (consume(TK_NORETURN))
+      is_noreturn = 1;
     else
       break;
   }
 
   if (consume(TK_STATIC_ASSERT)) {
-    if (is_static || is_extern || is_reg)
+    if (is_static || is_extern || is_reg || is_inline || is_noreturn)
       error_at(tok->loc, "storage class on a _Static_assert");
     parse_static_assert();
     return NULL;
   }
 
   if (consume(TK_TYPEDEF)) {
-    if (is_static || is_extern || is_reg)
+    if (is_static || is_extern || is_reg || is_inline || is_noreturn)
       error_at(tok->loc, "storage class on a typedef");
     parse_typedef();
     return NULL;
@@ -1827,7 +1838,12 @@ static Node *parse_declaration(void) {
     skip_attribute();
     n->is_static = is_static;
     n->is_extern = is_extern;
+    n->is_inline = is_inline;
+    n->is_noreturn = is_noreturn;
     n->align = alignas;
+    if (n->kind != ND_FUNC && (is_inline || is_noreturn))
+      error_at(tok->loc, "%s in declaration of non-function '%s'",
+               is_inline ? "inline" : "_Noreturn", n->name ? n->name : "");
     if (n->kind == ND_FUNC && alignas)
       error_at(tok->loc, "alignment specified for function '%s'", n->name);
     if (!n->name && n->kind == ND_DECL) {

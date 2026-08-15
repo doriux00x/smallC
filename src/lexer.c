@@ -25,6 +25,8 @@ static Keyword keywords[] = {
   {"_Static_assert", TK_STATIC_ASSERT},
   {"_Alignof", TK_ALIGNOF}, {"_Alignas", TK_ALIGNAS},
   {"_Generic", TK_GENERIC},
+  {"inline", TK_INLINE}, {"restrict", TK_RESTRICT},
+  {"_Noreturn", TK_NORETURN},
 };
 
 /* longest first so ">>=" wins over ">>" which wins over ">" */
@@ -369,6 +371,7 @@ static char *kind_names[] = {
   "SIZEOF", "BREAK", "CONTINUE", "DO",
   "SWITCH", "CASE", "DEFAULT", "GOTO", "STATIC_ASSERT",
   "ALIGNOF", "ALIGNAS", "GENERIC",
+  "INLINE", "RESTRICT", "NORETURN",
   "PUNCT",
 };
 

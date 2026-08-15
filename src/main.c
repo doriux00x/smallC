@@ -336,6 +336,10 @@ static void dump_stmt(Node *n, int d) {
         printf("static ");
       else if (n->is_extern)
         printf("extern ");
+      if (n->is_inline)
+        printf("inline ");
+      if (n->is_noreturn)
+        printf("_Noreturn ");
       dump_type(n->type);
       printf("\n");
       if (n->body)
