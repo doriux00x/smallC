@@ -59,6 +59,11 @@ void layout_union(Type *t);
 int type_size(Type *t);
 int type_align(Type *t);
 
+/* _Generic type equality on the controlling expression's type: the
+ * root compares unqualified (lvalue conversion dropped the top-level
+ * qualifiers), nested types compare with their qualifiers intact */
+int generic_match(Type *a, Type *b, int root);
+
 /* an integer or real constant value produced by const_fold() */
 typedef struct {
   int is_float;   /* the value lives in fval */

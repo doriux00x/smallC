@@ -27,6 +27,8 @@ static Keyword keywords[] = {
   {"_Generic", TK_GENERIC},
   {"inline", TK_INLINE}, {"restrict", TK_RESTRICT},
   {"_Noreturn", TK_NORETURN},
+  {"typeof", TK_TYPEOF}, {"__typeof__", TK_TYPEOF},
+  {"__typeof", TK_TYPEOF},
 };
 
 /* longest first so ">>=" wins over ">>" which wins over ">" */
@@ -371,7 +373,7 @@ static char *kind_names[] = {
   "SIZEOF", "BREAK", "CONTINUE", "DO",
   "SWITCH", "CASE", "DEFAULT", "GOTO", "STATIC_ASSERT",
   "ALIGNOF", "ALIGNAS", "GENERIC",
-  "INLINE", "RESTRICT", "NORETURN",
+  "INLINE", "RESTRICT", "NORETURN", "TYPEOF",
   "PUNCT",
 };
 

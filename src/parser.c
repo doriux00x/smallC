@@ -136,6 +136,181 @@ static void register_typedef(char *name, Type *type) {
   typedefs = t;
 }
 
+/* declared identifiers' types, for typeof(expr) at parse time. xmalloc
+ * names shadow (newest wins), exactly like the typedef registry: the
+ * compiler never type-checks against this table, it only answers
+ * "what was the most recent declaration of this name's type?" */
+typedef struct ParseVar ParseVar;
+struct ParseVar {
+  ParseVar *next;
+  char *name;
+  Type *type;
+};
+
+static ParseVar *parse_vars;
+
+static Type *find_parse_var(char *name) {
+  for (ParseVar *e = parse_vars; e; e = e->next)
+    if (strcmp(e->name, name) == 0)
+      return e->type;
+  return NULL;
+}
+
+static void register_parse_var(char *name, Type *type) {
+  ParseVar *e = xmalloc(sizeof(ParseVar));
+  e->name = name;
+  e->type = type;
+  e->next = parse_vars;
+  parse_vars = e;
+}
+
+/* the compile-time type of a just-parsed expression, computed at parse
+ * time for typeof(expr). this mirrors what the resolve pass would do
+ * with the full symbol side, but it only needs the *type*, so it walks
+ * the fresh AST over the parse scope's registry */
+static Type *infer_type(Node *n) {
+  switch (n->kind) {
+    case ND_NUM:
+      if (n->is_float)
+        return type_new(n->is_f ? TY_FLOAT : TY_DOUBLE);
+      if (n->is_long)
+        return type_new(TY_LONG);
+      return type_new(TY_INT);
+    case ND_STR:
+      return array_of(type_new(TY_CHAR), n->str_len + 1);
+    case ND_VAR: {
+      Type *t = find_parse_var(n->name);
+      if (!t)
+        error_at(tok->loc, "typeof operand '%s' has no known type", n->name);
+      return t;
+    }
+    case ND_MEMBER: {
+      Type *st = n->is_pntr ? infer_type(n->lhs)->base : infer_type(n->lhs);
+      if (st->kind != TY_STRUCT && st->kind != TY_UNION)
+        error("member access on a non-aggregate in typeof");
+      for (Member *m = st->members; m; m = m->next)
+        if (m->name && strcmp(m->name, n->name) == 0)
+          return m->type;
+      error("no member named '%s' in typeof operand", n->name);
+    }
+    case ND_INDEX: {
+      Type *base = infer_type(n->lhs);
+      if (base->kind == TY_ARRAY || base->kind == TY_PTR)
+        return base->base;
+      error("indexing a non-array in typeof");
+    }
+    case ND_UNARY:
+      switch (n->op) {
+        case '*': {
+          Type *base = infer_type(n->lhs);
+          if (base->kind == TY_PTR)
+            return base->base;
+          error("dereferencing a non-pointer in typeof");
+        }
+        case '&':
+          return ptr_to(infer_type(n->lhs));
+        case '!':
+          return type_new(TY_INT);
+        case '+':
+        case '-':
+          return infer_type(n->lhs);
+        default:
+          /* ~, ++, -- keep the operand's type (int after promotion) */
+          return infer_type(n->lhs);
+      }
+    case ND_BIN:
+      if (n->op == ',')
+        return infer_type(n->rhs);
+      {
+        Type *l = infer_type(n->lhs);
+        Type *r = infer_type(n->rhs);
+        switch (n->op) {
+          case OP_EQ: case OP_NE: case '<': case '>':
+          case OP_LE: case OP_GE: case OP_LOGAND: case OP_LOGOR:
+            return type_new(TY_INT);
+          default:
+            break;
+        }
+        if (l->kind == TY_DOUBLE || r->kind == TY_DOUBLE)
+          return type_new(TY_DOUBLE);
+        if (l->kind == TY_FLOAT || r->kind == TY_FLOAT)
+          return type_new(TY_FLOAT);
+        if (l->kind == TY_LONG || r->kind == TY_LONG)
+          return type_new(TY_LONG);
+        return type_new(TY_INT);
+      }
+    case ND_ASSIGN:
+      return infer_type(n->lhs);
+    case ND_COND: {
+      Type *a = infer_type(n->then);
+      Type *b = infer_type(n->els);
+      if (a->kind == TY_DOUBLE || b->kind == TY_DOUBLE)
+        return type_new(TY_DOUBLE);
+      if (a->kind == TY_FLOAT || b->kind == TY_FLOAT)
+        return type_new(TY_FLOAT);
+      if (a->kind == TY_LONG || b->kind == TY_LONG)
+        return type_new(TY_LONG);
+      return type_new(TY_INT);
+    }
+    case ND_CALL: {
+      Type *f = infer_type(n->lhs);
+      if (f->kind == TY_FUNC)
+        return f->ret;
+      if (f->kind == TY_PTR && f->base->kind == TY_FUNC)
+        return f->base->ret;
+      error("calling a non-function in typeof");
+    }
+    case ND_CAST:
+      return n->targ;
+    case ND_COMP_LIT:
+      return n->targ;
+    case ND_SIZEOF:
+    case ND_ALIGNOF: {
+      /* sizeof/_Alignof yield size_t (unsigned long); this surfaces
+       * in typeof where the operand's type is the question */
+      Type *sz = type_new(TY_LONG);
+      sz->is_unsigned = 1;
+      return sz;
+    }
+    case ND_VA_ARG:
+      return n->targ;
+    case ND_STMT_EXPR:
+      /* the value of a statement expression is its last expression */
+      if (n->then)
+        return infer_type(n->then);
+      return type_new(TY_VOID);
+    case ND_GENERIC: {
+      /* the controlling expression is only examined for its type; the
+       * chosen arm's type is the selection's type. duplicates are as
+       * fatal here as they are at resolve time */
+      Type *control = infer_type(n->cond);
+      if (control->kind == TY_ARRAY || control->kind == TY_FUNC)
+        control = ptr_to(control->base);
+      Type *t = NULL, *deflt = NULL;
+      for (Node *a = n->els; a; a = a->next) {
+        if (!a->targ) {
+          if (deflt)
+            error("duplicate default in _Generic");
+          deflt = infer_type(a->lhs);
+          continue;
+        }
+        if (generic_match(control, a->targ, 1)) {
+          if (t)
+            error("duplicate match in _Generic");
+          t = infer_type(a->lhs);
+        }
+      }
+      if (!t)
+        t = deflt;
+      if (!t)
+        error("no association matches the _Generic controlling type");
+      return t;
+    }
+    default:
+      error("unsupported expression in typeof");
+  }
+}
+
 /* the stdarg machinery's va_list: a builtin typedef for a struct
  * whose layout matches the SysV ABI (two 4-byte offsets, then the
  * overflow and register save areas), so a va_list built here can be
@@ -398,6 +573,7 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_STATIC || t->kind == TK_EXTERN || t->kind == TK_REGISTER ||
          t->kind == TK_ALIGNAS ||
          t->kind == TK_INLINE || t->kind == TK_RESTRICT || t->kind == TK_NORETURN ||
+         t->kind == TK_TYPEOF ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -538,6 +714,28 @@ static Type *parse_typespec(int *alignas_ret) {
         t = struct_type();
         register_tag(tag, t);
       }
+      continue;
+    }
+if (consume(TK_TYPEOF)) {
+      /* typeof(int) is a type; typeof(x) is the type of existing
+       * variable x, "known" only because the parser recorded it. */
+      expect_punct("(");
+      Type *tt;
+      if (is_typespec_start(tok)) {
+        char *dummy;
+        tt = declarator(parse_typespec(NULL), &dummy);
+      } else {
+        tt = infer_type(parse_assign());
+      }
+      expect_punct(")");
+      if (is_const || is_volatile || is_unsigned || longs) {
+        /* trailing qualifiers ("const typeof(x) y") must land on a
+         * copy, never on the type the registered variable shares */
+        Type *copy = xmalloc(sizeof(Type));
+        *copy = *tt;
+        tt = copy;
+      }
+      t = tt;
       continue;
     }
     if (at(TK_IDENT)) {
@@ -1706,6 +1904,14 @@ static Node *parse_declarator(Type *base, Type **out) {
     n->name = name;
     n->type = t;
     if (consume_punct("{")) {
+      /* parameters and the function's own name join the parse scope
+       * so typeof(a), typeof(f) and typeof(f()) inside the body
+       * resolve */
+      for (Node *p = t->params; p; p = p->next)
+        if (p->name)
+          register_parse_var(p->name, p->type);
+      if (name)
+        register_parse_var(name, t);
       cur_fn = t;
       n->body = parse_block();
       cur_fn = NULL;
@@ -1716,6 +1922,11 @@ static Node *parse_declarator(Type *base, Type **out) {
   Node *n = node_new(ND_DECL);
   n->name = name;
   n->type = t;
+
+  /* the declared name is already in scope for its own initializer
+   * ("char ch = (typeof(ch))97;"), so it registers before the '=' */
+  if (name)
+    register_parse_var(name, t);
 
   if (consume_punct("="))
     n->init = parse_initializer();

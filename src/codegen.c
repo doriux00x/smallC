@@ -349,7 +349,7 @@ static void resolve_cond(Node *n) {
  * control side's top-level qualifiers were dropped by conversion, so
  * only its root is compared unqualified; everything nested (a pointer
  * pointee, an array element) keeps its qualifiers */
-static int generic_match(Type *a, Type *b, int root) {
+int generic_match(Type *a, Type *b, int root) {
   if (a->kind != b->kind)
     return 0;
   if ((root ? (b->is_const || b->is_volatile)
