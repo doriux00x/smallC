@@ -167,6 +167,7 @@ static Type *real_type(Type *a, Type *b) {
 }
 
 static void resolve_expr(Node *n);
+static void resolve_stmt(Node *n);
 static void resolve_initializer(Node *n);
 static void gen_init_stores(Node *n);
 
@@ -483,6 +484,24 @@ static void resolve_expr(Node *n) {
     case ND_UNARY:
       resolve_unary(n);
       return;
+    case ND_STMT_EXPR: {
+      /* the block runs in its own scope; its value, if any, is the
+       * last expression statement (void when the block ends on a
+       * declaration) */
+      enter_scope();
+      Node *value = NULL;
+      for (Node *s = n->body; s; s = s->next) {
+        resolve_stmt(s);
+        if (!s->next && s->kind == ND_EXPR_STMT && s->lhs)
+          value = s->lhs;
+      }
+      leave_scope();
+      if (value)
+        n->type = value->type;
+      else
+        n->type = type_new(TY_VOID);
+      return;
+    }
     case ND_COND:
       resolve_cond(n);
       return;
@@ -2279,6 +2298,12 @@ static void gen_expr(Node *n) {
         default:
           error("internal: bad unary op %d", n->op);
       }
+      return;
+    case ND_STMT_EXPR:
+      /* the body's last statement (an expression) already left its
+       * value in %rax / %xmm0, so the selection is just the block */
+      for (Node *s = n->body; s; s = s->next)
+        gen_stmt(s);
       return;
     case ND_COND: {
       int l1 = labeln++;

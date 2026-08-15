@@ -121,6 +121,9 @@ static const char *op_name(int op) {
   return "?";
 }
 
+static void dump_stmt(Node *n, int d);
+static void dump_stmt_chain(Node *s, int d);
+
 static void dump_expr(Node *n, int d) {
   indent(d);
   switch (n->kind) {
@@ -155,6 +158,10 @@ static void dump_expr(Node *n, int d) {
       dump_expr(n->cond, d + 1);
       dump_expr(n->then, d + 1);
       dump_expr(n->els, d + 1);
+      return;
+    case ND_STMT_EXPR:
+      printf("statement expression\n");
+      dump_stmt_chain(n->body, d + 1);
       return;
     case ND_CALL:
       printf("call\n");

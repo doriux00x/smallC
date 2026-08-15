@@ -671,6 +671,7 @@ static Node *parse_mul(void);
 static Node *parse_unary(void);
 static Node *parse_postfix(void);
 static Node *parse_primary(void);
+static Node *parse_stmt(void);
 static Node *parse_initializer(void);
 
 static Node *parse_expr(void) {
@@ -884,7 +885,7 @@ static Node *parse_unary(void) {
  * postfix_suffix, so `(struct point){1,2}.x` works */
 static Node *postfix_suffix(Node *node) {
   for (;;) {
-    if (consume_punct("(")) {
+  if (consume_punct("(")) {
       Node *call = node_new(ND_CALL);
       call->lhs = node;
 
@@ -1138,6 +1139,40 @@ static Node *parse_primary(void) {
         n->vla_sz = vla_size_expr(ty);
     } else {
       n->lhs = parse_unary();
+    }
+    return n;
+  }
+
+  if (is_punct("(") && is_punct_next("{")) {
+    /* GNU statement expression: ({ stmt; ...; value; }) is an
+     * expression whose value is the last expression statement. the
+     * block is parsed exactly like a function body's, declarations
+     * and all; the "})" terminator is what tells this "(" from an
+     * ordinary parenthesized expression or a compound literal,
+     * whose brace never follows "(" directly */
+    tok = tok->next->next;
+    Node *n = node_new(ND_STMT_EXPR);
+    Node head = {0};
+    Node **link = &head.next;
+    while (!is_punct("}")) {
+      if (tok->kind == TK_EOF)
+        error_at(tok->loc, "unexpected EOF, missing '}'");
+      Node *s = parse_stmt();
+      while (s) {
+        *link = s;
+        link = &s->next;
+        s = s->next;
+      }
+    }
+    tok = tok->next;   /* '}' */
+    expect_punct(")");
+    n->body = head.next;
+    if (n->body) {
+      Node *last = n->body;
+      while (last->next)
+        last = last->next;
+      if (last->kind == ND_EXPR_STMT && last->lhs)
+        n->then = last->lhs;
     }
     return n;
   }

@@ -110,6 +110,9 @@ typedef enum {
                         cond the controlling expr, els the association
                         chain (each type in targ, arm in lhs, default
                         arm targ==NULL), then the chosen arm */
+  ND_STMT_EXPR,      /* GNU ({ stmts; value; }): block of statements in
+                        expression position; body the statements, then
+                        the last expression statement's value */
 } NodeKind;
 
 /* operator codes for ND_BIN/ND_UNARY/ND_ASSIGN.
