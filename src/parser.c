@@ -494,6 +494,81 @@ static void parse_enumerators(void) {
   expect_punct("}");
 }
 
+/* the attributes with real semantics: packed and aligned change
+ * layout, noreturn is _Noreturn by another name; every other clause
+ * gcc accepts is parsed and discarded */
+typedef struct {
+  int packed;
+  int no_ret;
+  int align;
+} Attrs;
+
+static int attr_name_is(char *name, char *a, char *b) {
+  return strcmp(name, a) == 0 || (b && strcmp(name, b) == 0);
+}
+
+/* parse one __attribute__((...)) clause into a. the list may be
+ * empty, the cases are attribute names each optionally parenthesized,
+ * and the arguments are balanced and skipped, so the multi-argument
+ * ones headers use (format(printf, 1, 2), nonnull(1, 2)) parse even
+ * though nothing consumes them */
+static void parse_attribute_clause(Attrs *a) {
+  expect_punct("(");
+  expect_punct("(");
+  for (;;) {
+    if (consume_punct(")"))
+      break;   /* an empty list is legal */
+    char *name = xstrndup(tok->loc, tok->len);
+    tok = tok->next;
+    int val = 0;
+    if (consume_punct("(")) {
+      if (attr_name_is(name, "aligned", "__aligned__")) {
+        /* aligned(N): a constant power-of-two size, like _Alignas */
+        if (!is_punct(")")) {
+          Node *e = parse_assign();
+          if (!is_const_expr(e))
+            error_at(tok->loc, "aligned attribute value is not a constant");
+          CVal cv = const_fold(e);
+          if (cv.is_float || cv.val < 1 || (cv.val & (cv.val - 1)) != 0)
+            error_at(tok->loc, "aligned attribute is not a positive power of 2");
+          val = cv.val;
+        }
+      }
+      int depth = 1;
+      while (depth) {
+        if (tok->kind == TK_EOF)
+          error_at(tok->loc, "unterminated __attribute__");
+        if (is_punct("("))
+          depth++;
+        else if (is_punct(")"))
+          depth--;
+        tok = tok->next;
+      }
+    }
+    if (attr_name_is(name, "aligned", "__aligned__"))
+      a->align = val;
+    else if (attr_name_is(name, "packed", "__packed__"))
+      a->packed = 1;
+    else if (attr_name_is(name, "noreturn", "__noreturn__"))
+      a->no_ret = 1;
+    if (consume_punct(","))
+      continue;
+    expect_punct(")");
+    break;
+  }
+  expect_punct(")");
+}
+
+/* every __attribute__ / __attribute clause in a row */
+static Attrs parse_attrs(void) {
+  Attrs a = {0};
+  while (tok->kind == TK_ATTRIBUTE) {
+    tok = tok->next;
+    parse_attribute_clause(&a);
+  }
+  return a;
+}
+
 static Member *parse_struct_members(int is_union) {
   Member head = {0};
   Member **link = &head.next;
@@ -650,6 +725,10 @@ static Type *parse_typespec(int *alignas_ret) {
       return t;
     }
     if (consume(TK_UNION)) {
+      /* "union __attribute__((packed)) U": the attribute addresses
+       * the tag itself, so it has to land on the type before the
+       * layout that the closing brace runs */
+      Attrs a = parse_attrs();
       char *tag = NULL;
       if (at(TK_IDENT))
         tag = expect(TK_IDENT, "union tag")->name;
@@ -664,6 +743,10 @@ static Type *parse_typespec(int *alignas_ret) {
           if (tag)
             register_tag(tag, ut);
         }
+        if (a.packed)
+          ut->is_packed = 1;
+        if (a.align > ut->align)
+          ut->align = a.align;
         ut->members = parse_struct_members(1);
         if (!ut->members)
           error_at(tok->loc, "empty union");
@@ -678,11 +761,17 @@ static Type *parse_typespec(int *alignas_ret) {
         /* an unknown tag in "union X" is a forward declaration;
          * it stays incomplete until a definition appears */
         t = union_type();
+        if (a.packed)
+          t->is_packed = 1;
         register_tag(tag, t);
       }
       continue;
     }
     if (consume(TK_STRUCT)) {
+      /* "struct __attribute__((packed)) S": the attribute addresses
+       * the tag itself, so it has to land on the type before the
+       * layout that the closing brace runs */
+      Attrs a = parse_attrs();
       char *tag = NULL;
       if (at(TK_IDENT))
         tag = expect(TK_IDENT, "struct tag")->name;
@@ -697,6 +786,10 @@ static Type *parse_typespec(int *alignas_ret) {
           if (tag)
             register_tag(tag, st);
         }
+        if (a.packed)
+          st->is_packed = 1;
+        if (a.align > st->align)
+          st->align = a.align;
         st->members = parse_struct_members(0);
         if (!st->members)
           error_at(tok->loc, "empty struct");
@@ -1297,6 +1390,12 @@ static Node *parse_generic(void) {
 }
 
 static Node *parse_primary(void) {
+  if (consume(TK_EXTENSION)) {
+    /* __extension__ exists only to quiet -pedantic; it shields a
+     * statement expression or typeof that follows, so it parses to
+     * nothing before the real operand */
+    return parse_unary();
+  }
   if (at(TK_ALIGNOF)) {
     tok = tok->next;
     Type *ty = NULL;
@@ -1579,7 +1678,8 @@ static Node *parse_stmt(void) {
 
     Node *init = NULL;
     if (!consume_punct(";")) {
-      if (is_typespec_start(tok))
+      if (is_typespec_start(tok) || tok->kind == TK_ATTRIBUTE ||
+          tok->kind == TK_EXTENSION)
         init = parse_declaration();   /* consumes its own ';' */
       else {
         Node *e = node_new(ND_EXPR_STMT);
@@ -1654,7 +1754,8 @@ static Node *parse_stmt(void) {
     return NULL;
   }
 
-  if (is_typespec_start(tok)) {
+  if (is_typespec_start(tok) || tok->kind == TK_ATTRIBUTE ||
+        tok->kind == TK_EXTENSION) {
     Node *s = parse_declaration();
     for (Node *m = s; m; m = m->next)
       if (m->kind == ND_FUNC && m->body)
@@ -1702,6 +1803,9 @@ static Type *parse_params(Type *ret) {
         Type *pt = parse_typespec(NULL);
         char *pname = NULL;
         pt = declarator(pt, &pname);   /* abstract declarators allowed */
+        parse_attrs();   /* "int x __attribute__((unused))": on a
+                            parameter the clause has no storage to
+                            change, so it parses and fades */
 
         Node *pn = node_new(ND_DECL);
         pn->name = pname;
@@ -1903,19 +2007,9 @@ static Node *parse_declarator(Type *base, Type **out) {
     Node *n = node_new(ND_FUNC);
     n->name = name;
     n->type = t;
-    if (consume_punct("{")) {
-      /* parameters and the function's own name join the parse scope
-       * so typeof(a), typeof(f) and typeof(f()) inside the body
-       * resolve */
-      for (Node *p = t->params; p; p = p->next)
-        if (p->name)
-          register_parse_var(p->name, p->type);
-      if (name)
-        register_parse_var(name, t);
-      cur_fn = t;
-      n->body = parse_block();
-      cur_fn = NULL;
-    }
+    /* the body is parsed by parse_declaration, once any post-
+     * declarator __attribute__ has been consumed ("int f(void)
+     * __attribute__((noreturn)) { ... }") */
     return n;
   }
 
@@ -1933,29 +2027,58 @@ static Node *parse_declarator(Type *base, Type **out) {
   return n;
 }
 
+/* __func__ / __FUNCTION__: C99 6.4.2.2 declares __func__ as a
+ * predefined identifier in every function body, an implicit
+ * static const char __func__[] = "name"; __FUNCTION__ is the GNU
+ * synonym with the same value. both are real static arrays (one per
+ * function, one per pipeline call), prepended to the body's statement
+ * chain, so they decay like any other named array and sizeof works */
+static Type *func_name_type(char *name) {
+  Type *ty = array_of(type_new(TY_CHAR), strlen(name) + 1);
+  ty->is_const = 1;
+  return ty;
+}
+
+static Node *func_name_decl(char *varname, char *name) {
+  Node *s = node_new(ND_STR);
+  s->str = name;
+  s->str_len = strlen(name);
+  Node *d = node_new(ND_DECL);
+  d->name = varname;
+  d->type = func_name_type(name);
+  d->is_static = 1;
+  d->init = s;
+  return d;
+}
+
+static Node *parse_function_body(Type *t, char *name) {
+  expect_punct("{");
+  /* parameters and the function's own name join the parse scope
+   * so typeof(a), typeof(f) and typeof(f()) inside the body
+   * resolve; the implicit __func__/__FUNCTION__ identifiers register
+   * before the body parses too, so typeof(__func__) works anywhere */
+  for (Node *p = t->params; p; p = p->next)
+    if (p->name)
+      register_parse_var(p->name, p->type);
+  if (name) {
+    register_parse_var(name, t);
+    register_parse_var("__func__", func_name_type(name));
+    register_parse_var("__FUNCTION__", func_name_type(name));
+  }
+  cur_fn = t;
+  Node *blk = parse_block();
+  cur_fn = NULL;
+  if (name) {
+    Node *f = func_name_decl("__func__", name);
+    f->next = func_name_decl("__FUNCTION__", name);
+    f->next->next = blk->body;
+    blk->body = f;
+  }
+  return blk;
+}
+
 /* "typedef <typespec> <declarator>, ...;": the declarator's type is
  * registered under its name, no storage is created */
-/* GNU __attribute__((...)) is resolved by gcc, not by the program;
- * the declaration is what it is either way, so skip the clause */
-static void skip_attribute(void) {
-  if (tok->kind != TK_IDENT || strcmp(tok->name, "__attribute__") != 0)
-    return;
-  tok = tok->next;
-  expect_punct("(");
-  int depth = 0;
-  for (;;) {
-    if (tok->kind == TK_EOF)
-      error_at(tok->loc, "unterminated __attribute__");
-    if (tok->kind == TK_PUNCT && *tok->loc == '(' && tok->len == 1)
-      depth++;
-    else if (tok->kind == TK_PUNCT && *tok->loc == ')' && tok->len == 1) {
-      if (depth-- == 0)
-        break;
-    }
-    tok = tok->next;
-  }
-  tok = tok->next;
-}
 
 static void parse_typedef(void) {
   for (;;) {
@@ -1970,7 +2093,24 @@ static void parse_typedef(void) {
     if (tok == start && start->kind == TK_IDENT && find_typedef(start->name))
       error_at(tok->loc, "typedef name required");
     t = declarator(t, &name);
-    skip_attribute();
+    Attrs a = parse_attrs();
+    if (a.packed) {
+      if (t->kind != TY_STRUCT && t->kind != TY_UNION)
+        error_at(tok->loc, "packed attribute applies only to a struct or union");
+      t->is_packed = 1;
+      if (t->kind == TY_STRUCT)
+        layout_struct(t);
+      else
+        layout_union(t);
+    }
+    if (a.align) {
+      /* aligned on a typedef lands on the type, on a copy so the
+       * alias it produced in parse_typespec is not mutated */
+      Type *copy = xmalloc(sizeof(Type));
+      *copy = *t;
+      copy->align = a.align;
+      t = copy;
+    }
     if (!name)
       error_at(tok->loc, "typedef name required");
     register_typedef(name, t);
@@ -2004,9 +2144,12 @@ static Node *parse_declaration(void) {
    * register is a hint the backend ignores (every local already
    * lives in the frame and spills to memory only on call), so it
    * sets no flag. inline and _Noreturn are function-specifiers, so
-   * applying them to an object is rejected after the declarator */
+   * applying them to an object is rejected after the declarator.
+   * __extension__ is a no-op and __attribute__(()) folds its
+   * semantics into attrs, which the declarator loop applies */
   int is_static = 0, is_extern = 0, is_reg = 0;
   int is_inline = 0, is_noreturn = 0;
+  Attrs attrs = {0};
   for (;;) {
     if (consume(TK_STATIC))
       is_static = 1;
@@ -2018,7 +2161,15 @@ static Node *parse_declaration(void) {
       is_inline = 1;
     else if (consume(TK_NORETURN))
       is_noreturn = 1;
-    else
+    else if (consume(TK_EXTENSION))
+      continue;
+    else if (tok->kind == TK_ATTRIBUTE) {
+      Attrs a = parse_attrs();
+      attrs.packed |= a.packed;
+      attrs.no_ret |= a.no_ret;
+      if (a.align > attrs.align)
+        attrs.align = a.align;
+    } else
       break;
   }
 
@@ -2043,15 +2194,42 @@ static Node *parse_declaration(void) {
    * object case and the function case is rejected after parsing */
   Type *base = parse_typespec(&alignas);
 
+  /* the attribute between the type and the declarator ("struct S
+   * {...} __attribute__((packed)) x;", "int __attribute__((unused))
+   * x;") rides the type that parse_typespec just left */
+  Attrs basea = parse_attrs();
+  attrs.packed |= basea.packed;
+  attrs.no_ret |= basea.no_ret;
+  if (basea.align > attrs.align)
+    attrs.align = basea.align;
+  if (attrs.packed) {
+    if (base->kind != TY_STRUCT && base->kind != TY_UNION)
+      error_at(tok->loc, "packed attribute applies only to a struct or union");
+    base->is_packed = 1;
+    if (base->kind == TY_STRUCT)
+      layout_struct(base);
+    else
+      layout_union(base);
+  }
+  if (attrs.align > alignas)
+    alignas = attrs.align;
+
   for (;;) {
     Type *t;
     Node *n = parse_declarator(base, &t);
-    skip_attribute();
+    Attrs a = parse_attrs();   /* post-declarator "int x __attribute__(...)" */
+    if (a.packed)
+      error_at(tok->loc, "packed attribute applies only to a struct or union type");
+    if (a.no_ret && n->kind != ND_FUNC)
+      /* gcc warns here; the attribute simply has no target */
+      a.no_ret = 0;
     n->is_static = is_static;
     n->is_extern = is_extern;
     n->is_inline = is_inline;
-    n->is_noreturn = is_noreturn;
+    n->is_noreturn = is_noreturn || a.no_ret;
     n->align = alignas;
+    if (a.align > n->align)
+      n->align = a.align;
     if (n->kind != ND_FUNC && (is_inline || is_noreturn))
       error_at(tok->loc, "%s in declaration of non-function '%s'",
                is_inline ? "inline" : "_Noreturn", n->name ? n->name : "");
@@ -2063,6 +2241,10 @@ static Node *parse_declaration(void) {
       expect_punct(";");
       return NULL;
     }
+    /* a function definition: the body comes after any post-
+     * declarator attribute */
+    if (n->kind == ND_FUNC && is_punct("{"))
+      n->body = parse_function_body(t, n->name);
     *link = n;
     link = &n->next;
 

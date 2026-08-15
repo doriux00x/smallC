@@ -80,6 +80,8 @@ void layout_struct(Type *t) {
 
   for (Member *m = t->members; m; m = m->next) {
     if (m->is_bitfield) {
+      /* a packed struct leaves bit-field unit placement at the
+       * natural rules; only the plain-member padding changes */
       if (m->bit_width == 0) {
         /* the anonymous marker: force the next bit-field into a
          * fresh unit, aligned to the *next* member's type */
@@ -113,6 +115,12 @@ void layout_struct(Type *t) {
       unit_off = -1;
       unit_bits = 0;
     }
+    if (t->is_packed) {
+      /* packed: members abut at the running offset, no rounding */
+      m->offset = off;
+      off += m->type->size;
+      continue;
+    }
     int a = type_align(m->type);
     if (m->align > a)
       a = m->align;
@@ -124,8 +132,19 @@ void layout_struct(Type *t) {
   }
   if (unit_off >= 0)
     off = unit_off + unit_size;
-  t->align = max_align;
-  t->size = (off + max_align - 1) / max_align * max_align;
+  /* an explicit alignment (the GNU `aligned` attribute, or _Alignas
+   * reached through a typedef) overrides the members' widest natural
+   * alignment and rounds the whole struct up to itself */
+  int a = t->align > max_align ? t->align : max_align;
+  if (t->is_packed) {
+    /* a packed struct rounds to no alignment and keeps no tail
+     * padding, exactly gcc's __attribute__((packed)) */
+    t->align = 1;
+    t->size = off;
+  } else {
+    t->align = a;
+    t->size = (off + a - 1) / a * a;
+  }
 }
 
 /* every member sits at offset 0; size is the widest member, rounded
@@ -143,8 +162,14 @@ void layout_union(Type *t) {
     if (a > max_align)
       max_align = a;
   }
-  t->align = max_align;
-  t->size = (max_size + max_align - 1) / max_align * max_align;
+  if (t->is_packed) {
+    t->align = 1;
+    t->size = max_size;
+  } else {
+    int a = t->align > max_align ? t->align : max_align;
+    t->align = a;
+    t->size = (max_size + a - 1) / a * a;
+  }
 }
 
 Type *type_new(TypeKind k) {

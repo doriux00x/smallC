@@ -42,6 +42,8 @@ struct Type {
   Node *params;      /* TY_FUNC params, ND_DECL nodes linked by next */
   int is_variadic;   /* TY_FUNC: "..." params; stdarg machinery */
   Member *members;   /* TY_STRUCT / TY_UNION */
+  int is_packed;     /* TY_STRUCT / TY_UNION: GNU `packed`, members
+                        abut with no padding and align drops to 1 */
   Type *mark_prev;   /* cycle guard for the -a dump & struct member walks */
 };
 

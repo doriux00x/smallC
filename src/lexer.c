@@ -29,6 +29,18 @@ static Keyword keywords[] = {
   {"_Noreturn", TK_NORETURN},
   {"typeof", TK_TYPEOF}, {"__typeof__", TK_TYPEOF},
   {"__typeof", TK_TYPEOF},
+  /* the GNU header vocabulary: every keyword ships the double- and
+   * triple-underscored spelling headers use, so libc prototypes
+   * compile as written; __extension__ and __attribute__(()) get their
+   * own tokens because parsing needs to know them */
+  {"__inline", TK_INLINE}, {"__inline__", TK_INLINE},
+  {"__restrict", TK_RESTRICT}, {"__restrict__", TK_RESTRICT},
+  {"__const", TK_CONST},
+  {"__volatile", TK_VOLATILE}, {"__volatile__", TK_VOLATILE},
+  {"__signed", TK_SIGNED}, {"__signed__", TK_SIGNED},
+  {"__alignof", TK_ALIGNOF}, {"__alignof__", TK_ALIGNOF},
+  {"__extension__", TK_EXTENSION},
+  {"__attribute", TK_ATTRIBUTE}, {"__attribute__", TK_ATTRIBUTE},
 };
 
 /* longest first so ">>=" wins over ">>" which wins over ">" */
@@ -374,6 +386,7 @@ static char *kind_names[] = {
   "SWITCH", "CASE", "DEFAULT", "GOTO", "STATIC_ASSERT",
   "ALIGNOF", "ALIGNAS", "GENERIC",
   "INLINE", "RESTRICT", "NORETURN", "TYPEOF",
+  "EXTENSION", "ATTRIBUTE",
   "PUNCT",
 };
 

@@ -69,7 +69,7 @@ int main() {
 
   if (ga[3] != 7 || ga[0] != 0) return 20;
   if (gp.x != 3 || gp.y != 4) return 21;
-  if (gflex[2] != 1 || gflex[3] != 0) return 22;
+  if (gflex[2] != 1 || sizeof(gflex) != 12) return 22;
 
   printf("rundesig ok\n");
   return 0;
