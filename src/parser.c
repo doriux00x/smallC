@@ -689,7 +689,14 @@ static Type *parse_typespec(int *alignas_ret) {
     if (consume(TK_VOID))      { t = type_new(TY_VOID);   continue; }
     if (consume(TK_CHAR))      { t = type_new(TY_CHAR);   continue; }
     if (consume(TK_SHORT))     { t = type_new(TY_SHORT);  continue; }
-    if (consume(TK_INT))       { t = type_new(TY_INT);    continue; }
+    if (consume(TK_INT)) {
+      /* "int" after long/short just spells the integer kind; it must
+       * not override the long/short already chosen ("long int" is
+       * long, "short int" is short, "long long int" is long long) */
+      if (!t)
+        t = type_new(TY_INT);
+      continue;
+    }
     if (consume(TK_FLOAT))     { t = type_new(TY_FLOAT);  continue; }
     if (consume(TK_DOUBLE))    { t = type_new(TY_DOUBLE); continue; }
     if (consume(TK_BOOL)) {
@@ -866,6 +873,10 @@ if (consume(TK_TYPEOF)) {
 
   if (!t)
     t = type_new(longs ? TY_LONG : TY_INT);
+  else if (longs && t->kind == TY_INT)
+    /* "long int" / "long long int": the int already materialized a
+     * TY_INT, fold it to long now that the run is over */
+    t = type_new(TY_LONG);
   if (longs >= 2)
     t->is_longlong = 1;
   t->is_unsigned = is_unsigned;
@@ -1535,6 +1546,73 @@ static Node *parse_primary(void) {
       return parse_va_end();
     if (strcmp(t->name, "va_copy") == 0)
       return parse_va_copy();
+    /* GNU builtins: every one folds at parse time, so none of them
+     * needs a node kind of its own */
+    if (strcmp(t->name, "__builtin_expect") == 0) {
+      /* __builtin_expect(e, v): the value of e; the hint half is
+       * parsed and dropped, since there is no branch-prediction pass
+       * to honor it */
+      expect_punct("(");
+      Node *exp = parse_assign();
+      expect_punct(",");
+      parse_assign();
+      expect_punct(")");
+      return exp;
+    }
+    if (strcmp(t->name, "__builtin_unreachable") == 0) {
+      /* a no-op marker; folds to a constant so it is legal anywhere
+       * an expression is */
+      expect_punct("(");
+      expect_punct(")");
+      Node *n = node_new(ND_NUM);
+      n->val = 0;
+      return n;
+    }
+    if (strcmp(t->name, "__builtin_constant_p") == 0) {
+      /* 1 when the argument is an integer constant expression, 0
+       * otherwise; the argument itself is never evaluated, only its
+       * constness is wanted. a string literal counts, as its address
+       * is a link-time constant (gcc agrees) */
+      expect_punct("(");
+      Node *e = parse_assign();
+      expect_punct(")");
+      Node *n = node_new(ND_NUM);
+      n->val = (e->kind == ND_STR || is_const_expr(e)) ? 1 : 0;
+      return n;
+    }
+    if (strcmp(t->name, "__builtin_types_compatible_p") == 0) {
+      /* 1 when the two type names are compatible, top-level
+       * qualifiers ignored on both sides, arrays and functions left
+       * un-decayed (an incomplete array matches any bound) */
+      expect_punct("(");
+      char *dummy;
+      Type *t1 = declarator(parse_typespec(NULL), &dummy);
+      expect_punct(",");
+      Type *t2 = declarator(parse_typespec(NULL), &dummy);
+      expect_punct(")");
+      Node *n = node_new(ND_NUM);
+      n->val = types_compatible(t1, t2);
+      return n;
+    }
+    if (strcmp(t->name, "__builtin_choose_expr") == 0) {
+      /* a when the condition is a nonzero integer constant, b when
+       * zero; the other arm is parsed but only the chosen one is
+       * resolved and code-generated, the _Generic one-shot rule, so
+       * a loser's errors or side effects never surface */
+      expect_punct("(");
+      Node *c = parse_assign();
+      expect_punct(",");
+      if (!is_const_expr(c))
+        error_at(tok->loc, "__builtin_choose_expr condition is not a constant");
+      Node *a = parse_assign();
+      expect_punct(",");
+      Node *b = parse_assign();
+      expect_punct(")");
+      CVal cv = const_fold(c);
+      if (cv.is_float)
+        error_at(tok->loc, "__builtin_choose_expr condition is not an integer constant");
+      return cv.val ? a : b;
+    }
     EnumConst *ec = find_enum_const(t->name);
     if (ec) {
       /* an enumerator is a compile-time int; it resolves here, so it

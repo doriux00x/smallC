@@ -344,6 +344,10 @@ static void resolve_cond(Node *n) {
   n->type = n->then->type;
 }
 
+static int char_kinds_agree(Type *a, Type *b) {
+  return a->is_bool == b->is_bool && a->is_unsigned == b->is_unsigned;
+}
+
 /* _Generic matches the controlling expression's type, after the
  * lvalue, array-to-pointer and function-to-pointer conversions. the
  * control side's top-level qualifiers were dropped by conversion, so
@@ -358,7 +362,7 @@ int generic_match(Type *a, Type *b, int root) {
     return 0;
   switch (a->kind) {
     case TY_CHAR:
-      return a->is_bool == b->is_bool;
+      return char_kinds_agree(a, b);
     case TY_SHORT:
     case TY_INT:
     case TY_LONG:
@@ -372,6 +376,47 @@ int generic_match(Type *a, Type *b, int root) {
     case TY_ARRAY:
       return a->array_len == b->array_len &&
              generic_match(a->base, b->base, 0);
+    case TY_STRUCT:
+    case TY_UNION:
+      return a == b;
+    default:
+      return 1;
+  }
+}
+
+/* __builtin_types_compatible_p(T1, T2): two type names compared
+ * with no decay, top-level qualifiers ignored on both sides, nested
+ * ones (pointees, array elements) compared exactly, and an
+ * incomplete-array bound compatible with any other bound, which is
+ * how gcc answers the query (int[] vs int[5] is 1, int[3] vs int[5]
+ * is 0). struct/union types match only by tag identity */
+int types_compatible(Type *a, Type *b) {
+  if (a->kind != b->kind)
+    return 0;
+  switch (a->kind) {
+    case TY_CHAR:
+      return char_kinds_agree(a, b);
+    case TY_SHORT:
+    case TY_INT:
+    case TY_LONG:
+      return a->is_unsigned == b->is_unsigned &&
+             a->is_longlong == b->is_longlong;
+    case TY_FLOAT:
+    case TY_DOUBLE:
+      return 1;
+    case TY_PTR:
+      if (a->base->is_const != b->base->is_const ||
+          a->base->is_volatile != b->base->is_volatile)
+        return 0;
+      return types_compatible(a->base, b->base);
+    case TY_ARRAY:
+      if (a->array_len != b->array_len &&
+          a->array_len != 0 && b->array_len != 0)
+        return 0;
+      if (a->base->is_const != b->base->is_const ||
+          a->base->is_volatile != b->base->is_volatile)
+        return 0;
+      return types_compatible(a->base, b->base);
     case TY_STRUCT:
     case TY_UNION:
       return a == b;

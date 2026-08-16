@@ -66,6 +66,10 @@ int type_align(Type *t);
  * qualifiers), nested types compare with their qualifiers intact */
 int generic_match(Type *a, Type *b, int root);
 
+/* __builtin_types_compatible_p(T1, T2): the two type names compared
+ * with no decay and top-level qualifiers ignored on both sides */
+int types_compatible(Type *a, Type *b);
+
 /* an integer or real constant value produced by const_fold() */
 typedef struct {
   int is_float;   /* the value lives in fval */
