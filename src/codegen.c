@@ -680,6 +680,11 @@ static void resolve_expr(Node *n) {
       }
       n->type = n->var->type;
       return;
+    case ND_LABEL_ADDR:
+      /* a label address is a void*; the label itself is checked and
+       * numbered by collect_labels, which looks at statements only */
+      n->type = ptr_to(type_new(TY_VOID));
+      return;
     case ND_INIT_LIST:
       error("initializer list not allowed in an expression");
     default:
@@ -1183,6 +1188,9 @@ static void resolve_stmt(Node *n) {
       resolve_stmt(n->body);
       return;
     case ND_GOTO:
+      return;
+    case ND_GOTO_PTR:
+      resolve_expr(n->lhs);
       return;
     case ND_DECL: {
       if (n->is_extern)
@@ -2061,6 +2069,34 @@ static void gen_cond_jump_true(Node *cond, int lbl) {
   fprintf(out, "  jne .L%d\n", lbl);
 }
 
+/* label registry for the whole compile: name -> jump label number.
+ * every label in every function lands here and the numbers are unique
+ * across the file, so a label-address stored in static data still
+ * resolves when the data is emitted after all the functions. gotos
+ * are emitted in a second pass over the body, so forward references
+ * resolve without fixups (labels are numbered up front) */
+static char **lbl_names;
+static int *lbl_nums;
+static int lbl_cnt;
+static int lbl_cap;
+static int lbl_start;   /* first label of the current function */
+
+static int find_label_span(char *name, int lo, int hi) {
+  for (int i = lo; i < hi; i++)
+    if (strcmp(lbl_names[i], name) == 0)
+      return lbl_nums[i];
+  return -1;
+}
+
+/* the current function only: a jump or an address in code may never
+ * reach into another function's labels */
+static int find_current_label(char *name) {
+  int t = find_label_span(name, lbl_start, lbl_cnt);
+  if (t < 0)
+    error("use of undefined label '%s'", name);
+  return t;
+}
+
 static void gen_expr(Node *n) {
   switch (n->kind) {
     case ND_NUM:
@@ -2082,6 +2118,16 @@ static void gen_expr(Node *n) {
     case ND_STR:
       emit_string(n);
       fprintf(out, "  lea %s(%%rip), %%rax\n", n->var->symname ? n->var->symname : n->var->name);
+      return;
+    case ND_LABEL_ADDR:
+      /* the address of the label's instruction; an indirect goto
+       * through it is a plain jmp *%rax. initializers got their
+       * number eagerly in collect_labels (data is emitted after all
+       * the functions); anything else resolves against this
+       * function's own labels */
+      if (n->label < 0)
+        n->label = find_current_label(n->name);
+      fprintf(out, "  lea .L%d(%%rip), %%rax\n", n->label);
       return;
     case ND_VAR:
       gen_addr(n);
@@ -2583,54 +2629,104 @@ static void gen_case_label(Node *c, void *arg) {
   fprintf(out, ".L%d:\n", skip);
 }
 
-/* label registry for one function: name -> jump label number.
- * gotos are emitted in a second pass over the body, so forward
- * references resolve without fixups (labels are numbered up front) */
-static char *lbl_names[256];
-static int lbl_nums[256];
-static int lbl_cnt;
+static void lbl_add(char *name) {
+  if (lbl_cnt == lbl_cap) {
+    lbl_cap = lbl_cap ? lbl_cap * 2 : 1024;
+    lbl_names = xrealloc(lbl_names, sizeof(char *) * lbl_cap);
+    lbl_nums = xrealloc(lbl_nums, sizeof(int) * lbl_cap);
+  }
+  lbl_names[lbl_cnt] = name;
+  lbl_nums[lbl_cnt] = labeln++;
+  lbl_cnt++;
+}
 
 /* walk the statement tree collecting every label; the shapes mirror
  * walk_cases. a goto into a block is fine: all locals live in the
  * function frame, and C only forbids it for VLA storage */
-static void collect_labels(Node *s) {
+static void walk_init_labels(Node *e);
+
+/* number every label of the function, then resolve any &&label that
+ * hides in an initializer; the two passes are separate because a
+ * static initializer may name a label defined later in the body */
+static void collect_labels(Node *s, int resolve_inits) {
   for (; s; s = s->next) {
     if (s->kind == ND_LABEL) {
-      for (int i = 0; i < lbl_cnt; i++)
-        if (strcmp(lbl_names[i], s->name) == 0)
-          error("redefinition of label '%s'", s->name);
-      lbl_names[lbl_cnt] = s->name;
-      lbl_nums[lbl_cnt] = labeln++;
-      s->label = lbl_nums[lbl_cnt];
-      lbl_cnt++;
+      if (!resolve_inits) {
+        for (int i = lbl_start; i < lbl_cnt; i++)
+          if (strcmp(lbl_names[i], s->name) == 0)
+            error("redefinition of label '%s'", s->name);
+        lbl_add(s->name);
+        s->label = lbl_nums[lbl_cnt - 1];
+      }
       if (s->body)
-        collect_labels(s->body);
+        collect_labels(s->body, resolve_inits);
       continue;
     }
     switch (s->kind) {
       case ND_BLOCK:
-        collect_labels(s->body);
+        collect_labels(s->body, resolve_inits);
         break;
       case ND_IF:
-        collect_labels(s->then);
+        collect_labels(s->then, resolve_inits);
         if (s->els)
-          collect_labels(s->els);
+          collect_labels(s->els, resolve_inits);
         break;
       case ND_WHILE:
       case ND_DO_WHILE:
       case ND_FOR:
-        collect_labels(s->then);
+        collect_labels(s->then, resolve_inits);
         break;
       case ND_SWITCH:
-        collect_labels(s->body);
+        collect_labels(s->body, resolve_inits);
         break;
       case ND_CASE:
         if (s->body)
-          collect_labels(s->body);
+          collect_labels(s->body, resolve_inits);
+        break;
+      case ND_DECL:
+        /* a static initializer may hold &&label elements: data is
+         * emitted after every function, so the number is fixed here,
+         * while this function's span is live */
+        if (resolve_inits)
+          walk_init_labels(s->init);
         break;
       default:
         break;
     }
+  }
+}
+
+/* walk an initializer tree for ND_LABEL_ADDR leaves and pin each to
+ * the current function's label number; a name that is not a label of
+ * this function is an error, as with goto */
+static void walk_init_labels(Node *e) {
+  for (; e; e = e->next) {
+    if (e->kind == ND_INIT_LIST) {
+      walk_init_labels(e->elems);
+      continue;
+    }
+    if (e->kind == ND_DESIG) {
+      if (e->lhs)
+        walk_init_labels(e->lhs);
+      walk_init_labels(e->then);
+      continue;
+    }
+    if (e->kind == ND_LABEL_ADDR) {
+      if (e->label < 0) {
+        e->label = find_label_span(e->name, lbl_start, lbl_cnt);
+        if (e->label < 0)
+          error("use of undefined label '%s' outside a function", e->name);
+      }
+      continue;
+    }
+    if (e->lhs)
+      walk_init_labels(e->lhs);
+    if (e->rhs)
+      walk_init_labels(e->rhs);
+    if (e->cond)
+      walk_init_labels(e->cond);
+    if (e->els)
+      walk_init_labels(e->els);
   }
 }
 
@@ -2797,16 +2893,13 @@ static void gen_stmt(Node *n) {
       fprintf(out, ".L%d:\n", n->label);
       gen_stmt(n->body);
       return;
-    case ND_GOTO: {
-      int target = -1;
-      for (int i = 0; i < lbl_cnt; i++)
-        if (strcmp(lbl_names[i], n->name) == 0)
-          target = lbl_nums[i];
-      if (target < 0)
-        error("use of undefined label '%s'", n->name);
-      fprintf(out, "  jmp .L%d\n", target);
+    case ND_GOTO_PTR:
+      gen_expr(n->lhs);
+      fprintf(out, "  jmp *%%rax\n");
       return;
-    }
+    case ND_GOTO:
+      fprintf(out, "  jmp .L%d\n", find_current_label(n->name));
+      return;
     case ND_CASE:
       /* the label was assigned when the compare chain was emitted */
       fprintf(out, ".L%d:\n", n->label);
@@ -2944,6 +3037,12 @@ static void gen_data(Node *n) {
         emit_string(it->expr);
         section(".data");
         fprintf(out, "  .quad %s\n", it->expr->var->name);
+      } else if (it->expr->kind == ND_LABEL_ADDR) {
+        /* the address of a label, pinned to its number while the
+         * owning function was compiled */
+        if (it->expr->label < 0)
+          error("use of undefined label '%s'", it->expr->name);
+        fprintf(out, "  .quad .L%d\n", it->expr->label);
       } else if (it->expr->kind == ND_UNARY && it->expr->op == '&') {
         /* the address of a global is a link-time constant */
         Obj *tgt = it->expr->lhs->var;
@@ -3135,8 +3234,9 @@ static void gen_func(Node *n) {
 
   brk_n = 0;
   cont_n = 0;
-  lbl_cnt = 0;
-  collect_labels(n->body);
+  lbl_start = lbl_cnt;
+  collect_labels(n->body, 0);
+  collect_labels(n->body, 1);
   ret_label = labeln++;
   gen_stmt(n->body);
 

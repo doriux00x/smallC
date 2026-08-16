@@ -178,6 +178,9 @@ static Type *infer_type(Node *n) {
       return type_new(TY_INT);
     case ND_STR:
       return array_of(type_new(TY_CHAR), n->str_len + 1);
+    case ND_LABEL_ADDR:
+      /* a label address is a void*, like gcc */
+      return ptr_to(type_new(TY_VOID));
     case ND_VAR: {
       Type *t = find_parse_var(n->name);
       if (!t)
@@ -1145,6 +1148,19 @@ static Node *parse_mul(void) {
 static Node *postfix_suffix(Node *node);
 
 static Node *parse_unary(void) {
+  /* GNU label-as-value: "&&name" is the address of the label in this
+   * function, usable as a void*; the && token cannot be a binary
+   * operator in unary position, so an identifier after it can only
+   * be a label */
+  if (tok->kind == TK_PUNCT && to_op() == OP_LOGAND && tok->next &&
+      tok->next->kind == TK_IDENT) {
+    Token *lt = tok->next;
+    tok = lt->next;
+    Node *n = node_new(ND_LABEL_ADDR);
+    n->name = lt->name;
+    n->label = -1;   /* the number is assigned by collect_labels */
+    return n;
+  }
   if (consume_punct("+")) return new_unary('+', parse_unary());
   if (consume_punct("-")) return new_unary('-', parse_unary());
   if (consume_punct("!")) return new_unary('!', parse_unary());
@@ -1802,6 +1818,13 @@ static Node *parse_stmt(void) {
   }
 
   if (consume(TK_GOTO)) {
+    if (consume_punct("*")) {
+      /* goto *p: an indirect jump through a label address */
+      Node *n = node_new(ND_GOTO_PTR);
+      n->lhs = parse_expr();
+      expect_punct(";");
+      return n;
+    }
     Node *n = node_new(ND_GOTO);
     n->name = expect(TK_IDENT, "label name")->name;
     expect_punct(";");

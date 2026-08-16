@@ -136,6 +136,9 @@ static void dump_expr(Node *n, int d) {
     case ND_STR:
       printf("str len=%d \"%s\"\n", n->str_len, n->str);
       return;
+    case ND_LABEL_ADDR:
+      printf("&&label %s\n", n->name);
+      return;
     case ND_VAR:
       printf("var %s\n", n->name);
       return;
@@ -318,6 +321,10 @@ static void dump_stmt(Node *n, int d) {
       return;
     case ND_GOTO:
       printf("goto %s\n", n->name);
+      return;
+    case ND_GOTO_PTR:
+      printf("goto *\n");
+      dump_expr(n->lhs, d + 1);
       return;
     case ND_RETURN:
       printf("return\n");
