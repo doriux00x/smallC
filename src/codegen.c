@@ -37,6 +37,7 @@ struct Obj {
   int is_local;
   int is_global;
   int is_function;
+  int is_thread;       /* thread-local storage: %fs-relative address */
 };
 
 struct Scope {
@@ -1195,6 +1196,8 @@ static void resolve_stmt(Node *n) {
     case ND_DECL: {
       if (n->is_extern)
         error("storage class on a local variable, unsupported");
+      if (n->is_thread && !n->is_static && !n->is_extern)
+        error("variable '%s': thread-local storage at block scope must be static or extern", n->name);
       check_type_supported(n->type);
       if (n->type->kind == TY_VOID)
         error("variable '%s' declared void", n->name);
@@ -1202,8 +1205,8 @@ static void resolve_stmt(Node *n) {
         /* a VLA has no compile-time size: no static storage, no
          * initializer (6.7.5.2), and its dimension expressions have
          * to be resolved so the allocation can evaluate them */
-        if (n->is_static)
-          error("variable '%s': a variable-length array cannot be static", n->name);
+        if (n->is_static || n->is_thread)
+          error("variable '%s': a variable-length array cannot be static or thread-local", n->name);
         if (n->init)
           error("variable '%s': a variable-length array cannot be initialized", n->name);
         for (Type *dt = n->type; dt->kind == TY_ARRAY; dt = dt->base)
@@ -1231,7 +1234,8 @@ static void resolve_stmt(Node *n) {
       }
       Obj *o = new_obj(n->name, n->type);
       o->align = n->align;
-      if (n->is_static) {
+      o->is_thread = n->is_thread;
+      if (n->is_static || n->is_thread) {
         /* a function-local static is a data symbol like a global; the
          * name gets mangled so the same identifier in two functions
          * doesn't collide. the initializer (resolved above) lands in
@@ -1360,6 +1364,7 @@ void resolve(Node *prog) {
       o = new_obj(n->name, n->type);
       o->is_global = 1;
       o->align = n->align;
+      o->is_thread = n->is_thread;
     } else {
       error("internal: unexpected top-level node");
       return;
@@ -1705,6 +1710,14 @@ static void gen_addr(Node *n) {
           fprintf(out, "  mov %d(%%rbp), %%rax\n", o->offset);
         else
           fprintf(out, "  lea %d(%%rbp), %%rax\n", o->offset);
+      } else if (o->is_thread) {
+        /* initial-exec: the TLS block's address lives in %fs:0; the
+         * symbol's slot inside it is the @tpoff link-time constant.
+         * a thread-local static is the same symbol with a mangled
+         * name, so it needs no special-casing here */
+        fprintf(out, "  mov %%fs:0, %%rax\n");
+        fprintf(out, "  add $%s@tpoff, %%rax\n",
+                o->symname ? o->symname : o->name);
       } else
         fprintf(out, "  lea %s(%%rip), %%rax\n", o->symname ? o->symname : o->name);
       return;
@@ -2978,10 +2991,16 @@ static void gen_data(Node *n) {
   char *sym = n->var ? (n->var->symname ? n->var->symname
                                         : n->var->name) : n->name;
   int exported = !n->is_static;
+  /* thread-local storage lives in .tdata instead of .data; every hop
+   * back inside this function must land on the same section, or a
+   * TLS symbol would split across two */
+  char *dsect = n->is_thread ? ".tdata" : ".data";
   if (n->inits) {
     /* brace initializer: one directive per leaf, .zero for the gaps
-     * (struct members can have padding between them) and the tail */
-    section(".data");
+     * (struct members can have padding between them) and the tail.
+     * thread-local storage lives in .tdata instead of .data, so the
+     * linker knows the symbol is a TLS block slot */
+    section(dsect);
     if (exported)
       fprintf(out, "  .globl %s\n", sym);
     emit_data_align(n);
@@ -3015,7 +3034,7 @@ static void gen_data(Node *n) {
       offs[best] = -1;
       /* emit_string hops to .rodata and back to .text; the fields
        * themselves must stay in .data */
-      section(".data");
+      section(dsect);
       if (it->offset > off)
         fprintf(out, "  .zero %d\n", it->offset - off);
       if (!it->expr) {
@@ -3035,7 +3054,7 @@ static void gen_data(Node *n) {
       } else if (it->expr->kind == ND_STR) {
         /* a pointer slot fed by a string literal: the address */
         emit_string(it->expr);
-        section(".data");
+        section(dsect);
         fprintf(out, "  .quad %s\n", it->expr->var->name);
       } else if (it->expr->kind == ND_LABEL_ADDR) {
         /* the address of a label, pinned to its number while the
@@ -3044,9 +3063,12 @@ static void gen_data(Node *n) {
           error("use of undefined label '%s'", it->expr->name);
         fprintf(out, "  .quad .L%d\n", it->expr->label);
       } else if (it->expr->kind == ND_UNARY && it->expr->op == '&') {
-        /* the address of a global is a link-time constant */
+        /* the address of a global is a link-time constant, but a
+         * thread-local one is not: it depends on %fs at run time */
         Obj *tgt = it->expr->lhs->var;
-        section(".data");
+        if (tgt && tgt->is_thread)
+          error("address of a thread-local variable is not a link-time constant");
+        section(dsect);
         fprintf(out, "  .quad %s\n",
                 tgt->symname ? tgt->symname : tgt->name);
       } else {
@@ -3063,7 +3085,7 @@ static void gen_data(Node *n) {
       off = it->offset + it->ty->size;
     }
     if (off < type_size(n->type)) {
-      section(".data");
+      section(dsect);
       fprintf(out, "  .zero %d\n", type_size(n->type) - off);
     }
     return;
@@ -3071,7 +3093,7 @@ static void gen_data(Node *n) {
   if (n->init->kind == ND_STR) {
     /* the label must exist before the .quad references it */
     emit_string(n->init);
-    section(".data");
+    section(dsect);
     if (exported)
       fprintf(out, "  .globl %s\n", sym);
     emit_data_align(n);
@@ -3080,18 +3102,21 @@ static void gen_data(Node *n) {
     return;
   }
   if (n->init->kind == ND_UNARY && n->init->op == '&') {
-    /* the address of a global is a link-time constant */
-    section(".data");
+    /* the address of a global is a link-time constant; a thread-local
+     * address is not, exactly as with the brace-leaves above */
+    Obj *tgt = n->init->lhs->var;
+    if (tgt && tgt->is_thread)
+      error("address of a thread-local variable is not a link-time constant");
+    section(dsect);
     if (exported)
       fprintf(out, "  .globl %s\n", sym);
     emit_data_align(n);
     fprintf(out, "%s:\n", sym);
-    Obj *tgt = n->init->lhs->var;
     fprintf(out, "  .quad %s\n", tgt->symname ? tgt->symname : tgt->name);
     return;
   }
   CVal v = const_fold(n->init);
-  section(".data");
+  section(dsect);
   if (exported)
     fprintf(out, "  .globl %s\n", sym);
   emit_data_align(n);
@@ -3268,7 +3293,7 @@ void codegen(Node *prog, char *outpath) {
       } else if (n->init) {
         gen_data(n);
       } else if (n->type->kind != TY_ARRAY || type_size(n->type) > 0) {
-        section(".bss");
+        section(n->is_thread ? ".tbss" : ".bss");
         if (!n->is_static)
           fprintf(out, "  .globl %s\n", n->name);
         emit_data_align(n);
@@ -3283,7 +3308,7 @@ void codegen(Node *prog, char *outpath) {
     if (s->init)
       gen_data(s);
     else {
-      section(".bss");
+      section(s->is_thread ? ".tbss" : ".bss");
       emit_data_align(s);
       fprintf(out, "%s:\n", s->var->symname);
       fprintf(out, "  .zero %d\n", type_size(s->type));

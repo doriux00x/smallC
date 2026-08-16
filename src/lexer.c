@@ -27,6 +27,7 @@ static Keyword keywords[] = {
   {"_Generic", TK_GENERIC},
   {"inline", TK_INLINE}, {"restrict", TK_RESTRICT},
   {"_Noreturn", TK_NORETURN},
+  {"_Thread_local", TK_THREAD_LOCAL}, {"__thread", TK_THREAD_LOCAL},
   {"typeof", TK_TYPEOF}, {"__typeof__", TK_TYPEOF},
   {"__typeof", TK_TYPEOF},
   /* the GNU header vocabulary: every keyword ships the double- and
@@ -386,6 +387,7 @@ static char *kind_names[] = {
   "SWITCH", "CASE", "DEFAULT", "GOTO", "STATIC_ASSERT",
   "ALIGNOF", "ALIGNAS", "GENERIC",
   "INLINE", "RESTRICT", "NORETURN", "TYPEOF",
+  "THREAD_LOCAL",
   "EXTENSION", "ATTRIBUTE",
   "PUNCT",
 };

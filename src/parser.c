@@ -651,7 +651,7 @@ static int is_typespec_start(Token *t) {
          t->kind == TK_STATIC || t->kind == TK_EXTERN || t->kind == TK_REGISTER ||
          t->kind == TK_ALIGNAS ||
          t->kind == TK_INLINE || t->kind == TK_RESTRICT || t->kind == TK_NORETURN ||
-         t->kind == TK_TYPEOF ||
+         t->kind == TK_TYPEOF || t->kind == TK_THREAD_LOCAL ||
          (t->kind == TK_IDENT && find_typedef(t->name) &&
           !typedef_ident_is_name(t));
 }
@@ -2182,6 +2182,12 @@ static Node *parse_function_body(Type *t, char *name) {
  * registered under its name, no storage is created */
 
 static void parse_typedef(void) {
+  /* a storage class after "typedef" ("typedef static int T;") is a
+   * constraint violation; reject the ones parse_declaration knows */
+  if (tok->kind == TK_STATIC || tok->kind == TK_EXTERN ||
+      tok->kind == TK_REGISTER || tok->kind == TK_INLINE ||
+      tok->kind == TK_NORETURN || tok->kind == TK_THREAD_LOCAL)
+    error_at(tok->loc, "storage class on a typedef");
   for (;;) {
     Token *start = tok;
     char *name;
@@ -2249,7 +2255,7 @@ static Node *parse_declaration(void) {
    * __extension__ is a no-op and __attribute__(()) folds its
    * semantics into attrs, which the declarator loop applies */
   int is_static = 0, is_extern = 0, is_reg = 0;
-  int is_inline = 0, is_noreturn = 0;
+  int is_inline = 0, is_noreturn = 0, is_thread = 0;
   Attrs attrs = {0};
   for (;;) {
     if (consume(TK_STATIC))
@@ -2262,6 +2268,8 @@ static Node *parse_declaration(void) {
       is_inline = 1;
     else if (consume(TK_NORETURN))
       is_noreturn = 1;
+    else if (consume(TK_THREAD_LOCAL))
+      is_thread = 1;
     else if (consume(TK_EXTENSION))
       continue;
     else if (tok->kind == TK_ATTRIBUTE) {
@@ -2275,14 +2283,16 @@ static Node *parse_declaration(void) {
   }
 
   if (consume(TK_STATIC_ASSERT)) {
-    if (is_static || is_extern || is_reg || is_inline || is_noreturn)
+    if (is_static || is_extern || is_reg || is_inline || is_noreturn ||
+        is_thread)
       error_at(tok->loc, "storage class on a _Static_assert");
     parse_static_assert();
     return NULL;
   }
 
   if (consume(TK_TYPEDEF)) {
-    if (is_static || is_extern || is_reg || is_inline || is_noreturn)
+    if (is_static || is_extern || is_reg || is_inline || is_noreturn ||
+        is_thread)
       error_at(tok->loc, "storage class on a typedef");
     parse_typedef();
     return NULL;
@@ -2328,6 +2338,7 @@ static Node *parse_declaration(void) {
     n->is_extern = is_extern;
     n->is_inline = is_inline;
     n->is_noreturn = is_noreturn || a.no_ret;
+    n->is_thread = is_thread;
     n->align = alignas;
     if (a.align > n->align)
       n->align = a.align;
@@ -2336,6 +2347,9 @@ static Node *parse_declaration(void) {
                is_inline ? "inline" : "_Noreturn", n->name ? n->name : "");
     if (n->kind == ND_FUNC && alignas)
       error_at(tok->loc, "alignment specified for function '%s'", n->name);
+    if (n->kind == ND_FUNC && is_thread)
+      error_at(tok->loc, "'%s': thread-local storage applies only to objects",
+               n->name ? n->name : "");
     if (!n->name && n->kind == ND_DECL) {
       /* a type-only declaration ("struct point {...};") carries
        * no storage, just a tag definition */

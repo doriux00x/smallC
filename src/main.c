@@ -256,6 +256,8 @@ static void dump_stmt(Node *n, int d) {
       return;
     case ND_DECL:
       printf("decl %-14s %2d bytes : ", n->name, n->type->size);
+      if (n->is_thread)
+        printf("thread ");
       if (n->is_static)
         printf("static ");
       else if (n->is_extern)
@@ -453,6 +455,10 @@ int main(int argc, char **argv) {
       continue;
     }
     printf("%-16s %2d bytes : ", n->name, n->type->size);
+    if (n->is_thread)
+      printf("thread ");
+    if (n->is_static)
+      printf("static ");
     dump_type(n->type);
     if (n->init) {
       printf(" =\n");
