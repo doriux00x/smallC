@@ -73,7 +73,7 @@ int types_compatible(Type *a, Type *b);
 /* an integer or real constant value produced by const_fold() */
 typedef struct {
   int is_float;   /* the value lives in fval */
-  int val;
+  long val;
   double fval;
 } CVal;
 
@@ -167,7 +167,7 @@ struct Node {
   char *name;                  /* identifier */
   char *str;                   /* ND_STR decoded contents */
   int str_len;
-  int val;                     /* ND_NUM, int value */
+  long val;                    /* ND_NUM, value (long literals carry here) */
   int is_float;                /* ND_NUM: floating value in fval */
   int is_f;                    /* ND_NUM: the f/F suffix, a float literal */
   int is_unsigned;             /* ND_NUM: hex value past INT_MAX, or U suffix */

@@ -299,6 +299,18 @@ o";
   check += 1000;
 #endif
 
+  /* 64-bit literals evaluate at full width inside #if / #elif */
+#if 0x100000000 > 0
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if 18446744073709551615UL == 0xFFFFFFFFFFFFFFFF
+  check += 1;
+#else
+  check += 1000;
+#endif
+
   /* #line N ["file"]: the next line becomes N, __FILE__ becomes the
    * new name, and the delta applies everywhere downstream */
 #line 300
@@ -320,7 +332,7 @@ o";
   check += 1000;
 #endif
 
-  if (check != 95)
+  if (check != 97)
     return check;
   printf("runpreproc ok\n");
   return 0;

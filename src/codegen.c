@@ -52,6 +52,14 @@ static int labeln;
 static int cur_offset;
 static char *cur_section = "";
 static int cur_va_off;      /* the current function's ~va save area */
+/* live 8-byte pushes on the expression stack: SysV needs rsp 16-
+ * aligned at every call, and the arg pushes alone don't decide the
+ * parity -- a save-push from an enclosing store can be live at the
+ * call. the counter is bumped by every emitted push/spill and popped
+ * by its matching pop, so the call site can pad to the real parity.
+ * every cluster pairs its pushes and pops inside one straight-line
+ * path, which keeps the count branch-proof */
+static int stack_depth;
 
 static FILE *out;
 static int brk_labels[64], cont_labels[64];
@@ -1637,9 +1645,11 @@ static void gen_bitfield_store(Node *n) {
     fprintf(out, "  shrq $%d, %%rax\n", 64 - w);
   }
   fprintf(out, "  push %%rax\n");   /* [plain value] */
+  stack_depth++;
   if (b)
     fprintf(out, "  shlq $%d, %%rax\n", b);   /* into place */
   fprintf(out, "  push %%rax\n");   /* [plain value, positioned] */
+  stack_depth++;
   switch (n->type->size) {
     case 1:
       fprintf(out, "  movzbl (%%rdi), %%edx\n");
@@ -1668,6 +1678,7 @@ static void gen_bitfield_store(Node *n) {
   fprintf(out, "  notq %%rax\n");   /* unit mask with the field cleared */
   fprintf(out, "  andq %%rax, %%rdx\n");
   fprintf(out, "  pop %%rax\n");    /* the positioned value */
+  stack_depth--;
   fprintf(out, "  orq %%rax, %%rdx\n");
   switch (n->type->size) {
     case 1:
@@ -1684,6 +1695,7 @@ static void gen_bitfield_store(Node *n) {
       break;
   }
   fprintf(out, "  pop %%rax\n");    /* the plain stored value */
+  stack_depth--;
   if (w < 64) {
     /* widen the stored value to the field's signedness, the same
      * way the load does: the raw int is not the field's value */
@@ -1734,14 +1746,17 @@ static void gen_addr(Node *n) {
     case ND_INDEX: {
       gen_expr(n->lhs);
       fprintf(out, "  push %%rax\n");
+      stack_depth++;
       gen_expr(n->rhs);
       if (n->vla_sz) {
         /* a[i], where the element type is itself variable-length
          * (int a[n][m]): the stride is m's byte size, evaluated now */
         fprintf(out, "  push %%rax\n");
+        stack_depth++;
         gen_expr(n->vla_sz);
         fprintf(out, "  mov %%rax, %%rcx\n");
         fprintf(out, "  pop %%rax\n");
+        stack_depth--;
         fprintf(out, "  imul %%rcx, %%rax\n");
       } else {
         int sz = type_size(n->lhs->type->base);
@@ -1749,6 +1764,7 @@ static void gen_addr(Node *n) {
           fprintf(out, "  imul $%d, %%rax, %%rax\n", sz);
       }
       fprintf(out, "  pop %%rdi\n");
+      stack_depth--;
       fprintf(out, "  add %%rdi, %%rax\n");
       return;
     }
@@ -1892,8 +1908,9 @@ static void emit_combine(int op, Type *lhs_ty, Type *rhs_ty) {
     case OP_SHL:
     case OP_SHR:
       fprintf(out, "  mov %%rdi, %%rcx\n");
-      /* FIXME: >> is always arithmetic; unsigned operands want shr */
-      fprintf(out, "  %s %%cl, %%rax\n", op == OP_SHL ? "shl" : "sar");
+      fprintf(out, "  %s %%cl, %%rax\n",
+              op == OP_SHL ? "shl" :
+              lhs_ty->is_unsigned || lhs_ty->is_bool ? "shr" : "sar");
       return;
     case OP_LOGAND:
     case OP_LOGOR: {
@@ -1968,10 +1985,14 @@ static void gen_call(Node *n) {
 
   /* odd argument counts would leave rsp 8 bytes off the SysV call
    * alignment; the filler goes below all the slots, so the callee
-   * never sees it, its only job is the parity */
-  int fill = nargs % 2;
-  if (fill)
+   * never sees it, its only job is the parity. the count is the
+   * full picture: pushes that are still live from the enclosing
+   * expression count too */
+  int fill = (nargs + stack_depth) % 2;
+  if (fill) {
     fprintf(out, "  push $0\n");
+    stack_depth++;
+  }
 
   /* evaluate right-to-left, one 8-byte slot per argument */
   for (i = nargs - 1; i >= 0; i--) {
@@ -1980,9 +2001,11 @@ static void gen_call(Node *n) {
       fprintf(out, "  cvtss2sd %%xmm0, %%xmm0\n");
     if (is_real(args[i]->type)) {
       fprintf(out, "  sub $8, %%rsp\n");
+      stack_depth++;
       fprintf(out, "  movsd %%xmm0, (%%rsp)\n");
     } else {
       fprintf(out, "  push %%rax\n");
+      stack_depth++;
     }
   }
 
@@ -2032,6 +2055,7 @@ static void gen_call(Node *n) {
 
   /* drop the argument slots (and the filler) to restore the frame */
   fprintf(out, "  add $%d, %%rsp\n", (nargs + fill) * 8);
+  stack_depth -= nargs + fill;
 
   /* the call's value: the address of the return buffer */
   if (has_sret)
@@ -2118,6 +2142,13 @@ static void gen_expr(Node *n) {
           emit_constf((float)n->fval);
         else
           emit_const(n->fval);
+      } else if (n->type->kind == TY_LONG) {
+        /* a 64-bit constant; GAS picks movabs when the immediate
+         * does not fit in a signed 32-bit mov */
+        if (n->type->is_unsigned)
+          fprintf(out, "  mov $%llu, %%rax\n", (unsigned long long)n->val);
+        else
+          fprintf(out, "  mov $%lld, %%rax\n", (long long)n->val);
       } else if (n->type->is_unsigned) {
         /* val is stored truncated to 32 bits; an unsigned constant
          * must ride the register zero-extended, so 0xdeadbeef is
@@ -2125,7 +2156,7 @@ static void gen_expr(Node *n) {
          * the 32-bit destination makes the mov a zero-extend */
         fprintf(out, "  mov $%u, %%eax\n", (unsigned)n->val);
       } else {
-        fprintf(out, "  mov $%d, %%rax\n", n->val);
+        fprintf(out, "  mov $%ld, %%rax\n", n->val);
       }
       return;
     case ND_STR:
@@ -2151,6 +2182,7 @@ static void gen_expr(Node *n) {
     case ND_ASSIGN: {
       gen_addr(n->lhs);
       fprintf(out, "  push %%rax\n");
+      stack_depth++;
 
       if (n->op == '=' && (n->lhs->type->kind == TY_STRUCT ||
                            n->lhs->type->kind == TY_UNION)) {
@@ -2162,9 +2194,12 @@ static void gen_expr(Node *n) {
         fprintf(out, "  mov (%%rsp), %%rdi\n");
         fprintf(out, "  mov $%d, %%rdx\n", n->lhs->type->size);
         fprintf(out, "  sub $8, %%rsp\n");
+        stack_depth++;
         fprintf(out, "  call memcpy\n");
         fprintf(out, "  add $8, %%rsp\n");
+        stack_depth--;
         fprintf(out, "  pop %%rax\n");
+        stack_depth--;
         return;
       }
 
@@ -2188,23 +2223,30 @@ static void gen_expr(Node *n) {
           const char *mv = n->type->kind == TY_DOUBLE ? "movsd" : "movss";
           gen_expr(n->rhs);
           fprintf(out, "  sub $8, %%rsp\n");
+          stack_depth++;
           fprintf(out, "  %s %%xmm0, (%%rsp)\n", mv);
           gen_expr(n->lhs);
           fprintf(out, "  %s (%%rsp), %%xmm1\n", mv);
           fprintf(out, "  add $8, %%rsp\n");
+          stack_depth--;
           emit_combine(op, n->lhs->type, n->rhs->type);
         } else {
           gen_expr(n->lhs);
           fprintf(out, "  push %%rax\n");
+          stack_depth++;
           gen_expr(n->rhs);
           fprintf(out, "  push %%rax\n");
+          stack_depth++;
           fprintf(out, "  pop %%rdi\n");
+          stack_depth--;
           fprintf(out, "  pop %%rax\n");
+          stack_depth--;
           emit_combine(op, n->lhs->type, n->rhs->type);
         }
       }
 
       fprintf(out, "  pop %%rdi\n");
+      stack_depth--;
       if (n->lhs->is_bitfield)
         gen_bitfield_store(n->lhs);
       else
@@ -2254,14 +2296,18 @@ static void gen_expr(Node *n) {
                          n->rhs->type->kind == TY_DOUBLE ?
                          "movsd" : "movss";
         fprintf(out, "  sub $8, %%rsp\n");
+        stack_depth++;
         fprintf(out, "  %s %%xmm0, (%%rsp)\n", mv);
         gen_expr(n->lhs);
         fprintf(out, "  %s (%%rsp), %%xmm1\n", mv);
         fprintf(out, "  add $8, %%rsp\n");
+        stack_depth--;
       } else {
         fprintf(out, "  push %%rax\n");
+        stack_depth++;
         gen_expr(n->lhs);
         fprintf(out, "  pop %%rdi\n");
+        stack_depth--;
       }
       emit_combine(n->op, n->lhs->type, n->rhs->type);
       return;
@@ -2301,6 +2347,12 @@ static void gen_expr(Node *n) {
             fprintf(out, "  movswq %%ax, %%rax\n");
           else if (tosz == 4)
             fprintf(out, "  movslq %%eax, %%rax\n");
+        } else if (!n->targ->is_unsigned && tosz == 4 && frsz == 4 &&
+                   n->lhs->type->is_unsigned) {
+          /* (int) of an unsigned int: 0xFFFFFFFF rode the register
+           * zero-extended, and a signed 32-bit value must ride it
+           * sign-extended, so (int)0xFFFFFFFF is -1 and not 4294967295 */
+          fprintf(out, "  movslq %%eax, %%rax\n");
         }
       }
       if (n->targ->is_bool) {
@@ -2346,7 +2398,10 @@ static void gen_expr(Node *n) {
           return;
         case '~':
           gen_expr(n->lhs);
-          fprintf(out, "  not %%rax\n");
+          /* an int rides 32 bits wide: the 64-bit not would flip
+           * the padding with the value (~0U is 0xffffffff, not -1) */
+          fprintf(out, "  not %s\n",
+                  type_size(n->lhs->type) == 4 ? "%eax" : "%rax");
           return;
         case '!':
           gen_expr(n->lhs);
@@ -2374,6 +2429,7 @@ static void gen_expr(Node *n) {
                       type_size(n->type->base) : 1;
           gen_addr(n->lhs);
           fprintf(out, "  push %%rax\n");          /* [addr] */
+          stack_depth++;
           if (n->lhs->kind == ND_MEMBER && n->lhs->is_bitfield)
             gen_bitfield_load(n->lhs);
           else
@@ -2391,8 +2447,9 @@ static void gen_expr(Node *n) {
               fprintf(out, "  subsd %%xmm0, %%xmm2\n");
               fprintf(out, "  movsd %%xmm2, %%xmm0\n");
             }
-            fprintf(out, "  pop %%rdi\n");         /* addr */
-            fprintf(out, "  movsd %%xmm0, (%%rdi)\n");
+fprintf(out, "  pop %%rdi\n");         /* addr */
+          stack_depth--;
+          fprintf(out, "  movsd %%xmm0, (%%rdi)\n");
             if (!n->is_prefix)
               fprintf(out, "  movsd %%xmm1, %%xmm0\n");
             return;
@@ -2407,8 +2464,9 @@ static void gen_expr(Node *n) {
               fprintf(out, "  subss %%xmm0, %%xmm2\n");
               fprintf(out, "  movss %%xmm2, %%xmm0\n");
             }
-            fprintf(out, "  pop %%rdi\n");         /* addr */
-            fprintf(out, "  movss %%xmm0, (%%rdi)\n");
+fprintf(out, "  pop %%rdi\n");         /* addr */
+          stack_depth--;
+          fprintf(out, "  movss %%xmm0, (%%rdi)\n");
             if (!n->is_prefix)
               fprintf(out, "  movss %%xmm1, %%xmm0\n");
             return;
@@ -2417,16 +2475,20 @@ static void gen_expr(Node *n) {
             fprintf(out, "  %s $%d, %%rax\n",
                     n->op == OP_INC ? "add" : "sub", scale);
             fprintf(out, "  pop %%rdi\n");          /* addr */
+            stack_depth--;
             if (n->lhs->is_bitfield)
               gen_bitfield_store(n->lhs);
             else
               store(n->type);
           } else {
             fprintf(out, "  push %%rax\n");         /* [addr, old] */
+            stack_depth++;
             fprintf(out, "  %s $%d, %%rax\n",
                     n->op == OP_INC ? "add" : "sub", scale);
             fprintf(out, "  pop %%rcx\n");          /* old value */
+            stack_depth--;
             fprintf(out, "  pop %%rdi\n");          /* addr */
+            stack_depth--;
             if (n->lhs->is_bitfield)
               gen_bitfield_store(n->lhs);
             else
@@ -2491,7 +2553,7 @@ static void gen_expr(Node *n) {
         fprintf(out, "  mov $%d, %%rax\n", type_size(n->targ));
       return;
     case ND_ALIGNOF:
-      fprintf(out, "  mov $%d, %%rax\n", n->val);
+      fprintf(out, "  mov $%ld, %%rax\n", n->val);
       return;
     case ND_GENERIC:
       /* resolution spliced the chosen arm into n->then, so the
@@ -2626,7 +2688,14 @@ static void gen_case_label(Node *c, void *arg) {
   }
   CVal lo = const_fold(c->lhs);
   if (!c->rhs) {
-    fprintf(out, "  cmp $%d, %%rax\n", lo.val);
+    /* a 64-bit immediate needs movabs, so any case value too big for
+     * a signed 32-bit mov goes through a register */
+    if (lo.val < -0x80000000LL || lo.val > 0x7fffffffLL) {
+      fprintf(out, "  mov $%lld, %%rcx\n", (long long)lo.val);
+      fprintf(out, "  cmp %%rcx, %%rax\n");
+    } else {
+      fprintf(out, "  cmp $%d, %%rax\n", (int)lo.val);
+    }
     fprintf(out, "  je .L%d\n", c->label);
     return;
   }
@@ -2634,9 +2703,19 @@ static void gen_case_label(Node *c, void *arg) {
    * start <= value <= end, otherwise fall through to the next label */
   CVal hi = const_fold(c->rhs);
   int skip = labeln++;
-  fprintf(out, "  cmp $%d, %%rax\n", lo.val);
+  if (lo.val < -0x80000000LL || lo.val > 0x7fffffffLL) {
+    fprintf(out, "  mov $%lld, %%rcx\n", (long long)lo.val);
+    fprintf(out, "  cmp %%rcx, %%rax\n");
+  } else {
+    fprintf(out, "  cmp $%d, %%rax\n", (int)lo.val);
+  }
   fprintf(out, "  jl .L%d\n", skip);
-  fprintf(out, "  cmp $%d, %%rax\n", hi.val);
+  if (hi.val < -0x80000000LL || hi.val > 0x7fffffffLL) {
+    fprintf(out, "  mov $%lld, %%rcx\n", (long long)hi.val);
+    fprintf(out, "  cmp %%rcx, %%rax\n");
+  } else {
+    fprintf(out, "  cmp $%d, %%rax\n", (int)hi.val);
+  }
   fprintf(out, "  jg .L%d\n", skip);
   fprintf(out, "  jmp .L%d\n", c->label);
   fprintf(out, ".L%d:\n", skip);
@@ -2752,9 +2831,11 @@ static void gen_init_stores(Node *n) {
     if (it->expr) {
       gen_expr(it->expr);
       fprintf(out, "  push %%rax\n");
+      stack_depth++;
       fprintf(out, "  lea %d(%%rbp), %%rdi\n",
               n->var->offset + it->offset);
       fprintf(out, "  pop %%rax\n");
+      stack_depth--;
     } else {
       /* zero leaf */
       if (it->ty->kind == TY_DOUBLE)
@@ -2812,8 +2893,10 @@ static void gen_stmt(Node *n) {
           fprintf(out, "  call memcpy\n");
         } else {
           fprintf(out, "  push %%rax\n");
+          stack_depth++;
           fprintf(out, "  lea %d(%%rbp), %%rdi\n", n->var->offset);
           fprintf(out, "  pop %%rax\n");
+          stack_depth--;
           store(n->type);
         }
       }
@@ -3073,14 +3156,23 @@ static void gen_data(Node *n) {
                 tgt->symname ? tgt->symname : tgt->name);
       } else {
         CVal v = const_fold(it->expr);
-        int ival = v.is_float ? (int)v.fval : v.val;
-        if (it->ty->is_bool)
-          ival = ival != 0;
-        fprintf(out, "  .%s %d\n",
-                it->ty->size == 1 ? "byte" :
-                it->ty->size == 2 ? "short" :
-                it->ty->size == 4 ? "long" : "quad",
-                ival);
+        if (it->ty->size >= 8) {
+          /* 64-bit slot: the constant is already a long, and the
+           * 32-bit emission below would truncate it */
+          long long ll = v.is_float ? (long long)v.fval : v.val;
+          if (it->ty->is_bool)
+            ll = ll != 0;
+          fprintf(out, "  .quad %lld\n", ll);
+        } else {
+          int ival = v.is_float ? (int)v.fval : v.val;
+          if (it->ty->is_bool)
+            ival = ival != 0;
+          fprintf(out, "  .%s %d\n",
+                  it->ty->size == 1 ? "byte" :
+                  it->ty->size == 2 ? "short" :
+                  it->ty->size == 4 ? "long" : "quad",
+                  ival);
+        }
       }
       off = it->offset + it->ty->size;
     }
@@ -3138,11 +3230,20 @@ static void gen_data(Node *n) {
   int ival = v.is_float ? (int)v.fval : v.val;
   if (n->type->is_bool)
     ival = ival != 0;
-  fprintf(out, "  .%s %d\n",
-          n->type->size == 1 ? "byte" :
-          n->type->size == 2 ? "short" :
-          n->type->size == 4 ? "long" : "quad",
-          ival);
+  if (n->type->size >= 8) {
+    /* 64-bit slot: the constant is already a long, so the value
+     * stays whole; the 32-bit emission below would truncate */
+    long long ll = v.is_float ? (long long)v.fval : v.val;
+    if (n->type->is_bool)
+      ll = ll != 0;
+    fprintf(out, "  .quad %lld\n", ll);
+  } else {
+    fprintf(out, "  .%s %d\n",
+            n->type->size == 1 ? "byte" :
+            n->type->size == 2 ? "short" :
+            n->type->size == 4 ? "long" : "quad",
+            ival);
+  }
 }
 
 static void gen_func(Node *n) {
@@ -3157,6 +3258,7 @@ static void gen_func(Node *n) {
   int frame = n->var->frame;
   if (frame > 0)
     fprintf(out, "  sub $%d, %%rsp\n", frame);
+  stack_depth = 0;
 
   /* variadic prologue: park the incoming argument registers in the
    * 176-byte ~va save area before the param spill below runs, which
@@ -3165,9 +3267,10 @@ static void gen_func(Node *n) {
   if (n->type->is_variadic) {
     static char *vargreg[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     for (int i = 0; i < 6; i++)
-      fprintf(out, "  mov %s, %d(%%rbp)\n", vargreg[i], n->val + i * 8);
+      fprintf(out, "  mov %s, %d(%%rbp)\n", vargreg[i], (int)n->val + i * 8);
     for (int i = 0; i < 8; i++)
-      fprintf(out, "  movsd %%xmm%d, %d(%%rbp)\n", i, n->val + 48 + i * 16);
+      fprintf(out, "  movsd %%xmm%d, %d(%%rbp)\n", i,
+              (int)n->val + 48 + i * 16);
   }
 
   /* spill the SysV registers into the param slots. ints arrive in

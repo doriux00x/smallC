@@ -159,42 +159,74 @@ static Token *read_number(char *start, char **pp, int line, int at_bol, int spac
     t->fval = strtod(p, &p);
     t->is_float = 1;
   } else {
-    /* the raw value decides the type: a hex literal past INT_MAX
-     * is an unsigned int; val keeps the 32-bit truncation */
-    long v = strtol(p, &p, 0);
-    t->val = (int)v;
-    t->is_unsigned = v > 2147483647;
+    /* 64-bit integer literals: the raw value decides the type, down
+     * gcc's ladder. decimal runs int, long, and then unsigned long
+     * (a value past LONG_MAX is unsigned, which is why gcc says
+     * "integer constant is so large that it is unsigned"); hex and
+     * octal run int, unsigned, long, unsigned long. the suffix
+     * narrows the ladder to its own class first. an overflow past
+     * 64 bits is an error, not a wrap-around */
+    int base = (start[0] == '0' && (start[1] == 'x' || start[1] == 'X'))
+                   ? 16 : (start[0] == '0' ? 8 : 10);
+    errno = 0;
+    unsigned long long v = strtoull(p, &p, 0);
+    if (errno == ERANGE)
+      error_at(t->loc, "integer literal is too large");
+    int is_long = 0;
+    int is_unsigned = 0;
+    if (*p == 'l' || *p == 'L') {
+      /* the integer suffix, in either order: L or LL, and U.
+       * 1.5L is a long double, which we only have as double */
+      if (!t->is_float)
+        is_long = 1;
+      p++;
+      if (*p == 'l' || *p == 'L')
+        p++;
+    }
+    if (!t->is_float && (*p == 'u' || *p == 'U')) {
+      is_unsigned = 1;
+      p++;
+      if (*p == 'l' || *p == 'L') {
+        is_long = 1;
+        p++;
+        if (*p == 'l' || *p == 'L')
+          p++;
+      }
+    }
+    if (is_long) {
+      if (v > 9223372036854775807ULL)
+        is_unsigned = 1;     /* rides unsigned long */
+    } else if (is_unsigned) {
+      if (v > 4294967295ULL)
+        is_long = 1;         /* unsigned long */
+    } else if (base == 10) {
+      if (v > 2147483647)
+        is_long = 1;         /* decimal is never unsigned */
+      if (v > 9223372036854775807ULL)
+        is_unsigned = 1;
+    } else {
+      if (v > 4294967295ULL)
+        is_long = 1;
+      if (v > 2147483647)
+        is_unsigned = v <= 4294967295ULL;
+      if (v > 9223372036854775807ULL)
+        is_unsigned = 1;
+    }
+    t->is_long = is_long;
+    t->is_unsigned = is_unsigned;
+    t->val = (long)v;
   }
   if (*p == 'f' || *p == 'F') {
-    /* "1f" is the float 1.0f; strtod stops at the suffix */
+    /* "1f" is the float 1.0f; the integer scan above stopped at the
+     * suffix, so the value is re-read as a float here */
     if (!t->is_float)
       t->fval = strtod(start, &p);
     p++;
     t->is_float = 1;
     t->is_f = 1;
   } else if (*p == 'l' || *p == 'L') {
-    if (t->is_float) {
-      /* 1.5L is a long double, which we only have as double */
-      p++;
-    } else {
-      /* the integer suffix, in either order: L or LL, and U */
-      t->is_long = 1;
-      p++;
-      if (*p == 'l' || *p == 'L')
-        p++;
-    }
-  } else if (*p == 'u' || *p == 'U') {
-    t->is_unsigned = 1;
-    p++;
-    if (*p == 'l' || *p == 'L') {
-      t->is_long = 1;
-      p++;
-      if (*p == 'l' || *p == 'L')
-        p++;
-    }
-  }
-  if (!t->is_float && (*p == 'u' || *p == 'U')) {
-    t->is_unsigned = 1;
+    /* 0x1.8p3L is a long double, which we only have as double;
+     * an integer literal's L was already swallowed by the scan */
     p++;
   }
   t->len = p - start;

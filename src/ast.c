@@ -270,7 +270,7 @@ Type *func_type(Type *ret) {
   return t;
 }
 
-static CVal cv_int(int v)   { CVal c = {0, v, 0};    return c; }
+static CVal cv_int(long v) { CVal c = {0, v, 0}; return c; }
 static CVal cv_fp(double f) { CVal c = {1, 0, f};    return c; }
 
 /* every node kind const_fold() can evaluate, i.e. an integer
@@ -321,7 +321,7 @@ CVal const_fold(Node *n) {
         error("unsupported global initializer");
       {
         CVal c = const_fold(n->lhs);
-        return cv_int(c.is_float ? (int)c.fval : c.val);
+        return cv_int(c.is_float ? (long)c.fval : c.val);
       }
     case ND_UNARY:
       switch (n->op) {
@@ -373,8 +373,8 @@ CVal const_fold(Node *n) {
           default: error("unsupported global initializer");
         }
       } else {
-        int lv = l.val;
-        int rv = r.val;
+        long lv = l.val;
+        long rv = r.val;
         switch (n->op) {
           case '+': return cv_int(lv + rv);
           case '-': return cv_int(lv - rv);

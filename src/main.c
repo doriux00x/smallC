@@ -131,7 +131,7 @@ static void dump_expr(Node *n, int d) {
       if (n->is_float)
         printf("num %f\n", n->fval);
       else
-        printf("num %d\n", n->val);
+        printf("num %ld\n", n->val);
       return;
     case ND_STR:
       printf("str len=%d \"%s\"\n", n->str_len, n->str);
@@ -436,7 +436,7 @@ int main(int argc, char **argv) {
       if (t->kind == TK_PUNCT)
         printf("PUNCT '%.*s'\n", t->len, t->loc);
       else if (t->kind == TK_NUM)
-        printf("NUM %d%s\n", t->val, t->is_float ? " (float)" : "");
+        printf("NUM %ld%s\n", t->val, t->is_float ? " (float)" : "");
       else
         printf("%s '%.*s'\n", token_kind_name(t->kind), t->len, t->loc);
     }

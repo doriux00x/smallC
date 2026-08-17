@@ -49,7 +49,13 @@ toolchain doing its usual job.
 
 - Integers: char, short, int, long and long long, signed and
   unsigned, with the C99 literal suffixes `U`, `L`, `LL` in either
-  order and case. `1.5L` long doubles ride on double.
+  order and case. Integer literals read the full 64-bit value and
+  type themselves down gcc's ladder (decimal: int, long, unsigned
+  long; hex/octal: int, unsigned, long, unsigned long), so
+  `0xFFFFFFFFFFFFFFFFUL` is `18446744073709551615` and
+  `(int)0xFFFFFFFF` is -1, both exactly as gcc computes. A literal
+  past 64 bits is an error instead of gcc's silent wrap. `1.5L`
+  long doubles ride on double.
 - `_Bool` with the semantics C actually demands: any nonzero value
   stored into one becomes 1, so `_Bool b = 7;` gives you a 1.
   `bool`, `true` and `false` are not built in — `#define bool _Bool`
@@ -130,11 +136,9 @@ here is generated or bootstrapped (well, one thing is — see
 
 In no particular order, and knowingly:
 
-- Integer literals are read as 32-bit quantities. A value above
-  `0xffffffff` cannot be spelled directly; build it with a shift
-  (`1UL << 40`), which is what the `L` suffix is for.
 - VLA limits: no initializers, no `static` VLAs, no VLA struct
   members (the works list above spells out what does work).
+- Bit-field initializers are still rejected.
 - Raw `#pragma` directives are skipped. The `_Pragma` operator is
   implemented, which is the form that matters inside macros.
 - The standard headers are not shipped. Declare the few libc
@@ -258,8 +262,6 @@ There is no test framework; they are all just programs.
 
 In no particular order, all of it rooted in the gaps above:
 
-- 64-bit integer literals, which removes the one real lexer
-  limitation left.
 - Bit-field initializers.
 - VLA initializers and `static` VLAs.
 - DWARF line tables, since the codegen is already real enough that

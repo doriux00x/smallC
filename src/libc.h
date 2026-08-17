@@ -14,6 +14,14 @@ typedef struct _IO_FILE FILE;
 #define NULL ((void *)0)
 #endif
 
+/* errno in glibc is per-thread TLS; the header hides that behind a
+ * function call, exactly as <errno.h> does */
+int *__errno_location(void);
+#define errno (*__errno_location())
+
+/* 34 on Linux, checked against <errno.h> at build time */
+#define ERANGE 34
+
 extern FILE *stderr;
 
 void *malloc(size_t n);
@@ -33,6 +41,8 @@ char *strstr(const char *hay, const char *needle);
 
 double strtod(const char *s, char **end);
 long strtol(const char *s, char **end, int base);
+unsigned long long strtoull(const char *s, char **end, int base);
+
 
 int isalpha(int c);
 int isalnum(int c);
