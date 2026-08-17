@@ -5,7 +5,8 @@
  * variadic macros (... / __VA_ARGS__ with the GNU , ## __VA_ARGS__
  * comma swallow), zero-parameter macros, empty macro arguments,
  * GNU named variadic parameters ("args..."), __VA_OPT__ conditional
- * parts, the _Pragma operator, and the dynamic macros
+ * parts, the _Pragma operator, #line N ["file"], and the dynamic
+ * macros
  * __LINE__/__FILE__/
  * __COUNTER__/__STDC__. every check adds 1 to the counter; the fail
  * branches add 1000 so any mis-evaluated conditional blows the total. */
@@ -298,7 +299,28 @@ o";
   check += 1000;
 #endif
 
-  if (check != 89)
+  /* #line N ["file"]: the next line becomes N, __FILE__ becomes the
+   * new name, and the delta applies everywhere downstream */
+#line 300
+  check += (__LINE__ == 300);
+#line 400 "gen.c"
+  check += (__LINE__ == 400);
+  check += (strcmp(__FILE__, "gen.c") == 0);
+#line 500
+#if __LINE__ == 500
+  check += 1;
+#else
+  check += 1000;
+#endif
+#line 1
+  check += (__LINE__ == 1);
+#if __LINE__ == 2
+  check += 1;
+#else
+  check += 1000;
+#endif
+
+  if (check != 95)
     return check;
   printf("runpreproc ok\n");
   return 0;

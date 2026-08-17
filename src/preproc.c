@@ -12,7 +12,7 @@
  * the -I dirs, "<...>" against the -I dirs only), #ifdef/#ifndef/#if
  * (constant integer expressions, the defined operator, __has_include,
  * and constants that are single-token macros), #elif, #else, #endif,
- * and the dynamic
+ * #line N ["file"], and the dynamic
  * macros __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
  * __x86_64__, __linux__.
  *
@@ -268,6 +268,7 @@ static Token *skip_line(Token **pp) {
 /* -------- dynamic macros -------- */
 
 static char *cur_file;
+static char *line_file;   /* the #line-set source name; NULL = cur_file */
 static int counter;
 
 static Token *builtin_macro(Token *t) {
@@ -283,7 +284,7 @@ static Token *builtin_macro(Token *t) {
     n = xmalloc(sizeof(Token));
     *n = *t;
     n->kind = TK_STR;
-    n->str = xstrdup(cur_file);
+    n->str = xstrdup(line_file ? line_file : cur_file);
     n->str_len = strlen(n->str);
     return n;
   }
@@ -1247,10 +1248,13 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
   }
 
     char *save_file = cur_file;
+    char *save_line = line_file;
     char *buf = read_file(found);
     cur_file = found;
+    line_file = NULL;
     core_stream(tokenize(buf), out, found, depth + 1, 0);
     cur_file = save_file;
+    line_file = save_line;
     return;
   }
 
@@ -1273,7 +1277,34 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     error_at(t->loc, "#error %s", buf);
   }
 
-  if (directive_is(name, "pragma") || directive_is(name, "line")) {
+  if (directive_is(name, "line")) {
+    /* #line N ["file"]: the next source line becomes N, and the name
+     * becomes "file" for __FILE__. every token that follows is
+     * patched by the delta, so __LINE__ is right in #if expressions
+     * and in the parser's error reporting alike (generated files
+     * from yacc-style tools publish their real source via #line) */
+    Token *p = name->next;
+    if (p->kind != TK_NUM || p->is_float)
+      error_at(p->loc, "expected line number after #line");
+    int newline = p->val;
+    if (newline < 0)
+      error_at(p->loc, "line number in #line must be positive");
+    Token *q = p->next;
+    if (q->kind == TK_STR) {
+      line_file = xstrdup(q->str);
+      q = q->next;
+    }
+    if (q->kind != TK_EOF && !q->at_bol)
+      error_at(q->loc, "extra tokens after #line");
+    Token *next = skip_line(&q);
+    int delta = newline - next->line;
+    for (Token *x = next; x->kind != TK_EOF; x = x->next)
+      x->line += delta;
+    *pp = next;
+    return;
+  }
+
+  if (directive_is(name, "pragma")) {
     *pp = skip_line(&name->next);
     return;
   }
