@@ -1,124 +1,148 @@
 # smallC
 
-A small C compiler for x86-64 Linux, written in C. It compiles a useful
-subset of C to real x86-64 assembly and is meant to stay small: the whole
-binary is currently about 250 KB on disk.
+A small C compiler for x86-64 Linux, written in C. It compiles a
+useful subset of C to real x86-64 assembly. The whole thing is a
+single executable, `smallcc`, about 460 KB on disk.
 
-The compiler is one executable, `smallcc`. It does not use libc or LLVM
-or anything like that. It is a from-scratch compiler: lexer, parser, type
-checking, and x86-64 codegen. The generated assembly is assembled and
-linked with your system `cc`.
+No LLVM, no borrowed front end, nothing clever: this is a from-scratch
+compiler — lexer, preprocessor, parser, type checker, codegen — and
+the only thing it leans on is your system `cc` to assemble and link
+the assembly it prints. The language is mostly C99 with bits of C11
+and C23 bolted on where they were fun or where real code trips over
+them: variable-length arrays, `_Static_assert`, `__VA_OPT__`,
+designated initializers, that sort of thing.
+
+The point is that you can actually read it. Each stage is one file,
+the parser is a couple thousand lines, and every feature commits with
+its test, so the repo doubles as an answer to the question almost
+every C programmer has wondered about once: what does a compiler
+actually do, line by line.
+
+## Demo
+
+Say hello, the way this project says hello:
+
+```c
+/* no headers shipped; declare the one libc function you use */
+int printf(const char *, ...);
+
+int fib(int n) {
+  return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+
+int main(void) {
+  printf("fib(10) = %d\n", fib(10));
+  return 0;
+}
+```
+
+    ./smallcc fib.c
+    cc -no-pie build/fib.s -o fib
+    ./fib
+
+    fib(10) = 55
+
+The compiler writes `build/fib.s`; from there it is your system
+toolchain doing its usual job.
 
 ## What works
 
-The language subset grows all the time. As of now it handles:
-
-- Integers: char, short, int, long and long long, with signed and
-  unsigned, and the C99 literal suffixes `U`, `L`, `LL` (in either
-  order and case; `1.5L` long doubles ride on double)
-- _Bool, with proper semantics: any nonzero value stored into one
-  becomes 1, so `_Bool b = 7;` gives you a 1. `bool`, `true` and
-  `false` are not built in; `#define bool _Bool` and so on if you
-  want them.
-- A small preprocessor: object-like and function-like `#define` and
-  `#undef`, with `#` stringize and `##` token paste (including
-  zero-parameter macros and empty macro arguments), variadic macros
-  (`...` / `__VA_ARGS__`, including the GNU `, ## __VA_ARGS__` comma
-  swallow), `#include` in "..." (resolved against the including
-  file's directory) and <...> form with `-I` search paths, and `#if`
-  / `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif` with constant
-  expressions, `defined()`, and the dynamic macros `__LINE__`,
-  `__FILE__`, `__COUNTER__`, `__STDC__`, `__STDC_VERSION__`.
-  Backslash-newline splicing works everywhere the standard does it:
-  between tokens, in comments, and inside string and character
-  literals.
-- Floating point: float and double, with SSE codegen, and hex float
-  literals (`0x1.8p3`, `0x1p4`) with the f/L suffixes
-- The C99 escape sequences in string and character literals: `\a` `\b`
-  `\f` `\n` `\r` `\t` `\v` `\\` `\'` `\"` `\?`, octal `\ooo` (up to
-  three digits) and hex `\xhh` (any number of hex digits, truncated
-  to 8 bits, as gcc does). A numeric escape above 127 in a character
-  literal is interpreted as a signed execution char, so `'\xff'` is
-  -1 on x86-64, exactly as gcc computes it.
-- Pointers, arrays, and full declarator grammar (function pointers
-  included)
-- Variable-length arrays: `int a[n]` with any dimension expression.
-  The storage is carved out of the stack where the array is declared
-  and freed again at return; `sizeof` on the declared variable is the
-  size its declaration captured (as gcc does), while slices,
-  strides, and nested dims are computed at run time. No initializers,
-  no `static` VLAs, no VLA struct members; a VLA parameter decays to
-  a pointer, as in C.
-- Struct, union, and enum types
+- Integers: char, short, int, long and long long, signed and
+  unsigned, with the C99 literal suffixes `U`, `L`, `LL` in either
+  order and case. `1.5L` long doubles ride on double.
+- `_Bool` with the semantics C actually demands: any nonzero value
+  stored into one becomes 1, so `_Bool b = 7;` gives you a 1.
+  `bool`, `true` and `false` are not built in — `#define bool _Bool`
+  if you want them.
+- A small but serious preprocessor: object-like and function-like
+  `#define` and `#undef`, `#` stringize and `##` token paste
+  (including zero-parameter macros and empty macro arguments),
+  variadic macros with `...`/`__VA_ARGS__`, the GNU comma-swallow
+  form `, ## __VA_ARGS__`, the GNU named form (`args...`), and the
+  C23 `__VA_OPT__(...)` conditional part. `#include` in `"..."` form
+  resolves against the including file's directory first and then the
+  `-I` dirs; the `<...>` form only searches the `-I` dirs. `#if` /
+  `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif` evaluate
+  constant integer expressions with `defined()`, `__has_include`,
+  and constants that are single-token macros. `#line N ["file"]`
+  renumbers the file like gcc does, and `_Pragma` pipes through to
+  the skipped-pragma path. The always-on macros are `__LINE__`,
+  `__FILE__`, `__COUNTER__`, `__STDC__`, `__STDC_VERSION__`,
+  `__x86_64__` and `__linux__`. Backslash-newline splicing works
+  everywhere the standard does it: between tokens, in comments, and
+  inside string and character literals.
+- Floating point: float and double with SSE codegen, hex float
+  literals (`0x1.8p3`) with the `f`/`L` suffixes.
+- The C99 escape sequences in string and character literals, octals
+  to three digits, hex escapes to however many (truncated to 8 bits,
+  as gcc does). A numeric escape above 127 in a character literal is
+  a signed execution char, so `'\xff'` is -1 on x86-64, exactly as
+  gcc computes it.
+- Pointers, arrays, and the full declarator grammar, function
+  pointers included.
+- Variable-length arrays: `int a[n]` with any dimension expression,
+  carved out of the stack where they are declared. `sizeof` on the
+  declared variable is the size its declaration captured, as gcc
+  does; slices, strides, and nested dimensions compute at run time.
+  No initializers, no `static` VLAs, no VLA struct members; a VLA
+  parameter decays to a pointer, as in C.
+- Struct, union, and enum types, passed and returned by value.
 - `_Static_assert(cond, "msg")` at top level and inside functions;
-  the condition is an integer constant expression (`sizeof`,
-  arithmetic, comparisons, `defined()`-style macro tricks), and a
-  zero value is a compile-time error carrying the message. The
+  a zero condition is a compile-time error carrying the message. The
   condition must be constant, so VLA `sizeof` is rejected.
-- Flexible array members: the last member of a struct may be an
-  incomplete array (`int a[]`); it adds nothing to `sizeof`
-- Bit-fields (`int x : 3`), including unnamed and zero-width
-  alignment markers; bit-field initializers are rejected
-- typedef
-- The const qualifier
-- The volatile qualifier, in all positions (`volatile int`,
-  `int volatile`, `volatile int *p`, `int *volatile p`). The
-  backend never elides, reorders, or caches memory accesses, so
-  volatile needs no special code generation; it is accepted and
-  stored on the type so `volatile` code compiles as written.
-- static and extern storage classes
-- The register storage class, on locals and parameters. It is a
-  hint, and the backend ignores it: every local already gets a
-  stack slot and stays in memory only on calls, which is what
-  register asks for anyway. Taking the address of one is
+- Flexible array members: a trailing `int a[]` adds nothing to
+  `sizeof`.
+- Bit-fields, including unnamed and zero-width alignment markers.
+  Bit-field initializers are rejected.
+- typedef, const, and volatile in every position. The backend never
+  elides, reorders, or caches memory accesses, so volatile needs no
+  special codegen: volatile code compiles as written.
+- static and extern; register is accepted as the hint it always was
+  (every local already lives in a stack slot and stays there except
+  across calls). Taking the address of a register variable is
   accepted too, where C would reject it.
-- switch / case / default, including case labels hidden inside
-  blocks and branches, and constant expressions in case labels
-- goto and statement labels, forward or backward, into and out of
-  blocks
-- Initializers: scalars, arrays, strings, structs, and brace
-  initializers with zero-filling
-- C99 designated initializers: `.member = v`, `[idx] = v`, chains
-  like `.a.b[2] = v`, out-of-order members, and flexible arrays
-  sized by the largest designator index
-- C99 compound literals: `(int[]){1, 2, 3}` and
-  `(struct point){1, 2}` create an anonymous initialized object at
-  block scope, a fresh one on every evaluation, usable as an lvalue
-- Struct and union values passed by value and returned by value
-- Variadic functions, with `va_list`, `va_start`, `va_arg`, `va_end`
-  and `va_copy`. `...` parameters ride the System V register save
-  area, so a compiler-built `va_list` can even be handed to libc's
-  `vprintf`
-- Function definitions, prototypes, and calls with the System V
-  calling convention
-- The usual operators: arithmetic, comparisons with automatic
-  promotion, logical, bitwise, casts, sizeof, assignment operators,
-  ++/--, ternary, the comma operator with its sequence point, member
-  access `.` and `->`, indexing
+- switch / case / default, even with case labels hiding inside
+  blocks, and constant expressions as case values. goto and labels,
+  forward or backward, into and out of blocks.
+- Initializers: scalars, arrays, strings, structs, brace lists with
+  zero-filling. C99 designated initializers (`.member = v`,
+  `[idx] = v`, chains like `.a.b[2] = v`, out of order, and flexible
+  arrays sized by the largest designator index). C99 compound
+  literals create an anonymous initialized object at block scope, a
+  fresh one per evaluation, usable as an lvalue.
+- Variadic functions with `va_list`, `va_start`, `va_arg`, `va_end`,
+  `va_copy`. `...` parameters ride the System V register save area,
+  so a compiler-built `va_list` can be handed straight to libc's
+  `vprintf`.
+- The gcc-compat builtins people actually use: `__builtin_offsetof`,
+  `__builtin_expect`, `__builtin_unreachable`, `__builtin_constant_p`,
+  `__builtin_types_compatible_p`, `__builtin_choose_expr`.
+- The usual operators: arithmetic with automatic promotion,
+  comparisons, logical, bitwise, casts, `sizeof`, assignment
+  operators, `++`/`--`, ternary, the comma operator with its
+  sequence point, `.` and `->`, indexing.
 
-Nothing in the compiler is generated or bootstrapped; it is
-self-written C compiled by your system compiler.
+The compiler is self-written C built by your system compiler; nothing
+here is generated or bootstrapped (well, one thing is — see
+"self-hosting" below).
 
 ## What does not work
 
-Known gaps, in no particular order:
+In no particular order, and knowingly:
 
-- No VLA.
-- Very small preprocessor: object-like and function-like `#define`
-  with `#` stringize and `##` paste, variadic macros
-  (`...`/`__VA_ARGS__`, with the GNU `, ## __VA_ARGS__` comma
-  swallow), `#include` in quote and <...> form with `-I` search
-  paths, and `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` with
-  constant expressions and `defined()`. But no `#pragma` handling
-  beyond skipping, and the standard headers are not shipped; declare
-  the few libc functions you use by hand, as the tests do.
-- Only 64-bit x86 (System V ABI, Linux/ELF). No Windows, no ARM,
-  no 32-bit.
-- Global float/double initializers must be constant expressions,
-  same as C requires.
-- Integer literals are read as 32-bit quantities, so a value beyond
+- Integer literals are read as 32-bit quantities. A value above
   `0xffffffff` cannot be spelled directly; build it with a shift
-  (`1UL << 40`), which is what the `L` suffix helps with.
+  (`1UL << 40`), which is what the `L` suffix is for.
+- VLA limits: no initializers, no `static` VLAs, no VLA struct
+  members (the works list above spells out what does work).
+- Raw `#pragma` directives are skipped. The `_Pragma` operator is
+  implemented, which is the form that matters inside macros.
+- The standard headers are not shipped. Declare the few libc
+  functions you use by hand, the way the tests do.
+- Only 64-bit x86: System V ABI, Linux/ELF. No Windows, no ARM, no
+  32-bit anything.
+- No debug info. The assembly is plain; gdb will show you symbols,
+  not line tables.
 
 If something is missing that you need, the parser is small and the
 features above show how each piece fits together, so adding one is
@@ -126,71 +150,67 @@ usually a day's work. Read the tests first.
 
 ## Building
 
-You need a C compiler and make(1). Any of gcc or clang works. There
-are no third-party dependencies, no configure step, no cmake, no
-installed headers beyond the C standard library.
-
-Plain build:
+You need a C compiler and make(1); gcc or clang both work. There are
+no third-party dependencies, no configure step, no cmake, no installed
+headers beyond the C standard library.
 
     make
 
 This produces `smallcc` in the repo root and object files in `build/`.
-
 Package installs by distro, if you do not already have a toolchain:
 
-Gentoo:
-
-    emerge --ask sys-devel/gcc sys-devel/make
-
-Arch and derivatives (Artix, EndeavourOS, etc.):
-
-    pacman -S base-devel
-
-Debian, Ubuntu, Mint, and other apt-based distros:
-
-    apt install build-essential
-
-Fedora, RHEL, CentOS Stream, Rocky, AlmaLinux:
-
-    dnf groupinstall "Development Tools"
-
-openSUSE (Tumbleweed and Leap):
-
-    zypper install -t pattern devel_basis
-
-Alpine and other musl distros:
-
-    apk add build-base
+- Gentoo: `emerge --ask sys-devel/gcc sys-devel/make`
+- Arch and derivatives (Artix, EndeavourOS, ...): `pacman -S base-devel`
+- Debian, Ubuntu, Mint, and other apt-based distros:
+  `apt install build-essential`
+- Fedora, RHEL, CentOS Stream, Rocky, AlmaLinux:
+  `dnf groupinstall "Development Tools"`
+- openSUSE (Tumbleweed and Leap): `zypper install -t pattern devel_basis`
+- Alpine and other musl distros: `apk add build-base`
 
 From there the build is always the same two commands:
 
     make
     make test
 
+### Self-hosting
+
+The compiler compiles itself:
+
+    make selftest
+
+smallcc compiles its own six source files, your cc assembles them, the
+result is smallcc2; smallcc2 does the same to produce smallcc3, and
+the two must be byte-for-byte identical. Then the whole test suite
+runs against smallcc2. One honest asterisk: `util.o` is still built
+by the host cc, because the util unit still needs real `va_list`.
+Self-hosting, with training wheels.
+
 ## Using it
 
-Compile a single .c file to assembly:
+Compile one file to assembly:
 
     ./smallcc yourfile.c
 
 The assembly lands in `build/yourfile.s`. Several files compile in
-one run, each to its own `build/<base>.s` (basenames must not
-clash):
+one run, each to its own `build/<base>.s` (basenames must not clash):
 
     ./smallcc one.c two.c
 
-Assemble and link with your system compiler (one or many files):
+`-I dir` adds an include search path (repeatable). Assemble and link
+with your system compiler:
 
     cc -no-pie build/a.s build/b.s -o program
 
-Then run it:
-
-    ./build/yourfile
-
-Two debug flags, mostly useful while developing the compiler itself:
+Two debug flags, mostly for developing the compiler itself:
 
     ./smallcc -a tests/switch.c   # dump the AST
     ./smallcc -t tests/lexer.c    # dump the token stream
+
+One translation unit is read, tokenized, preprocessed, parsed,
+resolved, and code-generated; every stage rewinds its own state, so
+several files in one invocation are just that pipeline several times
+in a row.
 
 ## Tests
 
@@ -199,24 +219,28 @@ Two debug flags, mostly useful while developing the compiler itself:
 - Dump tests feed the parser and print the AST or tokens; they only
   exercise the front end.
 - Run tests are real programs. The compiler compiles them to
-  assembly, your system cc assembles and links the result, and the
-  program runs and must exit with status 0.
+  assembly, cc assembles and links the result, and the program runs
+  and must exit 0.
 
-The run tests double as feature demos. `tests/rungoto.c` covers the
-goto features, `tests/runstruct.c` the struct and union handling,
+The run tests double as feature demos. `tests/rungoto.c` is the goto
+feature, `tests/runstruct.c` the struct and union handling,
 `tests/runbit.c` the bit-fields, `tests/runfloat.c` the floating
-point, and so on.
-
-`make size` prints the binary size; the informal budget is to keep
-the whole compiler under 2 MB.
+point, `tests/runpreproc.c` the preprocessor, and so on. The informal
+budget is to keep the whole compiler well under 2 MB; right now it is
+about 460 KB.
 
 ## Layout
 
-    src/main.c      driver, flag handling, AST dump
+    src/main.c      driver, flags, AST dump
     src/lexer.c     tokenizer
-    src/parser.c    parser, type checker, initializer handling
+    src/preproc.c   preprocessor, operating on the lexer's token
+                    stream: macro expansions are spliced back into
+                    one flat chain, so the parser never sees
+                    anything but a single token sequence
+    src/parser.c    parser, type checker, initializer handling,
+                    the __builtin_* forms
     src/ast.c       AST node and type constructors
-    src/codegen.c   x86-64 code generation
+    src/codegen.c   the entire backend, straight to assembly text
     src/util.c      allocators, error reporting
     tests/          parser dumps and runnable programs
 
@@ -225,7 +249,22 @@ adds, and the test for it lands in the same commit.
 
 ## Writing tests
 
-A run test is a C file with a `main` that returns 0 on success (the
-exit code is the verdict). Add it to the `test:` target in the
-Makefile run loop; the compiler picks its name up via `tests/$t.c`.
-There is no test framework, they are all just programs.
+A run test is a C file with a `main` that returns 0 on success; the
+exit code is the verdict. Add it to the `test:` target in the
+Makefile run loop, and the compiler picks it up via `tests/$t.c`.
+There is no test framework; they are all just programs.
+
+## What's next
+
+In no particular order, all of it rooted in the gaps above:
+
+- 64-bit integer literals, which removes the one real lexer
+  limitation left.
+- Bit-field initializers.
+- VLA initializers and `static` VLAs.
+- DWARF line tables, since the codegen is already real enough that
+  breakpoints would work.
+
+Non-goals, so nobody has to ask: Windows, ARM, 32-bit targets, a
+shipped libc, and replacing your system toolchain. smallC stays small;
+that is the point.
