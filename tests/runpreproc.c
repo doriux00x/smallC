@@ -4,8 +4,9 @@
  * directory, # stringize, ## token paste, backslash-newline splicing,
  * variadic macros (... / __VA_ARGS__ with the GNU , ## __VA_ARGS__
  * comma swallow), zero-parameter macros, empty macro arguments,
- * __VA_OPT__ conditional parts, the _Pragma operator, and the
- * dynamic macros __LINE__/__FILE__/
+ * GNU named variadic parameters ("args..."), __VA_OPT__ conditional
+ * parts, the _Pragma operator, and the dynamic macros
+ * __LINE__/__FILE__/
  * __COUNTER__/__STDC__. every check adds 1 to the counter; the fail
  * branches add 1000 so any mis-evaluated conditional blows the total. */
 
@@ -247,7 +248,32 @@ o";
 #define PPSTMT _Pragma("GCC diagnostic push") check += 1;
   PPSTMT;
 
-  if (check != 73)
+  /* GNU named variadic parameters: "args..." gives the slice a name,
+   * taking over __VA_ARGS__'s slot; # stringize, ## paste, the comma
+   * swallow and __VA_OPT__ all key off the parameter, not its
+   * spelling, and __VA_ARGS__ inside such a macro is an ordinary
+   * identifier (gcc warns the same way) */
+#define VNAMED(a, args...) a + args
+#define VONLY(args...) args
+#define VUNUSED(a, args...) a
+#define VSTR(args...) #args
+#define VDP2(fmt, args...) printf(fmt, ## args)
+#define VPAS(x, rest...) x ## rest
+#define VOPT2(a, args...) a __VA_OPT__(+ 1)
+  check += (VNAMED(1, 2) == 3);
+  check += (VNAMED(1, 2, 3) == 3);        /* 1 + 2, 3: the comma wins */
+  check += (VONLY(4, 5) == 5);            /* the whole list is the slice */
+  check += (VNAMED(9, 10) == 19);
+  check += (strcmp(VSTR(1 + 2), "1 + 2") == 0);
+  check += (VDP2("x%d", 3) == 2);         /* comma kept, args passed */
+  check += (VDP2("y") == 1);              /* comma swallowed, slice empty */
+  check += (VPAS(12, 34) == 1234);
+  check += (VOPT2(5) == 5);               /* empty slice: __VA_OPT__ off */
+  check += (VOPT2(5, 9) == 6);            /* non-empty: __VA_OPT__ on */
+  check += (VONLY(7) == 7);               /* single-token slice */
+  check += (VUNUSED(8) == 8);             /* the named vararg may stay unused */
+
+  if (check != 85)
     return check;
   printf("runpreproc ok\n");
   return 0;

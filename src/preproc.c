@@ -6,8 +6,8 @@
 
 /* a bare-bones preprocessor: #define (object- and function-like,
  * with # stringize and ## token paste), variadic macros ("..." and
- * __VA_ARGS__, with the GNU , ## __VA_ARGS__ comma swallow and the
- * C23 __VA_OPT__ conditional part), #undef,
+ * __VA_ARGS__ with the GNU , ## __VA_ARGS__ comma swallow, the GNU
+ * named form "args...", and the C23 __VA_OPT__ conditional part), #undef,
  * #include ("..." resolves against the including file's directory and
  * the -I dirs, "<...>" against the -I dirs only), #ifdef/#ifndef/#if
  * (constant integer expressions, the defined operator, and constants
@@ -1088,6 +1088,21 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
                                sizeof(char *) * (m->nparams + 1));
           m->params[m->nparams++] = b->name;
           b = b->next;
+          if (b->kind == TK_PUNCT && b->len == 3 &&
+              memcmp(b->loc, "...", 3) == 0) {
+            /* GNU named variadic parameter: "args..." binds the slice
+             * that __VA_ARGS__ takes in the plain form. the name is
+             * already the last registered parameter, so substitution,
+             * # stringize, ## paste, the comma swallow and __VA_OPT__
+             * all keep working, keyed off the index, not the spelling;
+             * __VA_ARGS__ inside such a macro is an ordinary
+             * identifier, as gcc warns */
+            m->is_varargs = 1;
+            b = b->next;
+            if (!(b->kind == TK_PUNCT && *b->loc == ')' && b->len == 1))
+              error_at(b->loc, "expected ')' after '...'");
+            break;
+          }
           if (b->kind == TK_PUNCT && *b->loc == ')' && b->len == 1)
             break;
           if (b->kind == TK_PUNCT && *b->loc == ',' && b->len == 1) {
