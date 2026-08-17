@@ -2,12 +2,14 @@
  * __builtin_constant_p (constness query, argument never evaluated),
  * __builtin_types_compatible_p (two type names, no decay, top-level
  * qualifiers ignored), __builtin_choose_expr (constant-condition
- * selection where only the chosen arm compiles), and
- * __builtin_unreachable (a no-op marker) */
+ * selection where only the chosen arm compiles),
+ * __builtin_unreachable (a no-op marker), and __builtin_offsetof
+ * (a member's byte offset, folded to a constant like gcc's) */
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #define TCP(a, b) __builtin_types_compatible_p(a, b)
+#define offsetof(t, m) __builtin_offsetof(t, m)
 
 int side;
 
@@ -16,6 +18,18 @@ int bump(void) { side++; return 7; }
 enum { ECON = 9 };
 
 struct Point { int x; int y; };
+
+struct Inner { char a; short b; };    /* a:0, b:2 */
+struct Pair { int p; short q; };      /* p:0, q:4 */
+struct Outer {                        /* the 32-bit layout */
+  char c0;                            /* 0 */
+  struct Inner in;                    /* 2, size 4 */
+  char c1;                            /* 6 */
+  int arr[5];                         /* 8 */
+  char tail[3];                       /* 28 */
+  struct Pair pr[3];                  /* 32 */
+};                                    /* size 56 */
+union U { char c; int i; short s[4]; };
 
 int main(void) {
   /* __builtin_expect: the value of the first operand, hint ignored */
@@ -109,6 +123,54 @@ int main(void) {
       return 51;
     buf[0] = 'x';
     if (buf[0] != 'x') return 52;
+  }
+
+  /* __builtin_offsetof: member byte offsets, constant-folded */
+  if (__builtin_offsetof(struct Point, y) != 4) return 53;
+  if (__builtin_offsetof(struct Point, x) != 0) return 54;
+
+  /* .name steps walk into nested structs */
+  if (__builtin_offsetof(struct Outer, c0) != 0) return 55;
+  if (__builtin_offsetof(struct Outer, in) != 2) return 56;
+  if (__builtin_offsetof(struct Outer, in.a) != 2) return 57;
+  if (__builtin_offsetof(struct Outer, in.b) != 4) return 58;
+  if (__builtin_offsetof(struct Outer, c1) != 6) return 59;
+  if (__builtin_offsetof(struct Outer, arr) != 8) return 60;
+
+  /* [const] subscripts step through arrays */
+  if (__builtin_offsetof(struct Outer, arr[0]) != 8) return 61;
+  if (__builtin_offsetof(struct Outer, arr[3]) != 20) return 62;
+  if (__builtin_offsetof(struct Outer, tail[1]) != 29) return 63;
+  if (__builtin_offsetof(struct Outer, pr[2].q) != 52) return 64;
+  if (__builtin_offsetof(struct Outer, pr[1].p) != 40) return 65;
+
+  /* the index is any constant expression, even a sizeof */
+  if (__builtin_offsetof(struct Outer, arr[sizeof(int)]) != 24) return 66;
+  if (__builtin_offsetof(struct Outer, arr[3 * 2 - 5]) != 12) return 67;
+
+  /* a union has every member at 0, subscripts included */
+  if (__builtin_offsetof(union U, i) != 0) return 68;
+  if (__builtin_offsetof(union U, c) != 0) return 69;
+  if (__builtin_offsetof(union U, s[2]) != 4) return 70;
+
+  /* the stddef.h idiom: the result lands in global and enum
+   * initializers, all of it decided at compile time */
+  {
+    static int tab[offsetof(struct Outer, pr[2].q)];
+    enum { QOFF = __builtin_offsetof(struct Outer, pr[2].q) };
+    if (sizeof(tab) != 52 * sizeof(int)) return 71;
+    if (QOFF != 52) return 72;
+  }
+
+  /* the container_of workhorse: member address minus its offset */
+  {
+    struct Outer o;
+    int *arrp = &o.arr[0];
+    struct Outer *back = (struct Outer *)((char *)arrp -
+                                          __builtin_offsetof(struct Outer, arr));
+    if (back != &o) return 73;
+    o.c1 = 5;
+    if (back->c1 != 5) return 74;
   }
 
   printf("runbuiltin ok\n");

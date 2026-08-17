@@ -1564,6 +1564,69 @@ static Node *parse_primary(void) {
       return parse_va_copy();
     /* GNU builtins: every one folds at parse time, so none of them
      * needs a node kind of its own */
+    if (strcmp(t->name, "__builtin_offsetof") == 0) {
+      /* __builtin_offsetof(type, member-designator): the byte offset
+       * of a member, folded to a constant like gcc's. the designator
+       * starts with a member name, then takes any mix of .name steps
+       * and [const] subscripts, each moving the walk a level deeper */
+      expect_punct("(");
+      char *dummy;
+      Type *ty = declarator(parse_typespec(NULL), &dummy);
+      expect_punct(",");
+      int offset = 0;
+      char *below = expect_ident("member name")->name;
+      if (ty->kind != TY_STRUCT && ty->kind != TY_UNION)
+        error_at(tok->loc, "member designator '%s' is not of a struct or union", below);
+      Member *m = NULL;
+      for (Member *c = ty->members; c; c = c->next)
+        if (c->name && strcmp(c->name, below) == 0) {
+          m = c;
+          break;
+        }
+      if (!m)
+        error_at(tok->loc, "no member named '%s' in __builtin_offsetof", below);
+      offset += m->offset;
+      ty = m->type;
+      for (;;) {
+        if (consume_punct(".")) {
+          if (ty->kind != TY_STRUCT && ty->kind != TY_UNION)
+            error_at(tok->loc, "member designator '%s' is not of a struct or union", below);
+          char *mname = expect_ident("member name")->name;
+          Member *m = NULL;
+          for (Member *c = ty->members; c; c = c->next)
+            if (c->name && strcmp(c->name, mname) == 0) {
+              m = c;
+              break;
+            }
+          if (!m)
+            error_at(tok->loc, "'%s' has no member named '%s' in __builtin_offsetof",
+                     below, mname);
+          offset += m->offset;
+          ty = m->type;
+          below = mname;
+        } else if (is_punct("[")) {
+          tok = tok->next;
+          int ok = 1;
+          int idx = try_eval_const(parse_assign(), &ok);
+          expect_punct("]");
+          if (!ok)
+            error_at(tok->loc, "array index in __builtin_offsetof is not a constant");
+          if (ty->kind != TY_ARRAY)
+            error_at(tok->loc, "subscript in __builtin_offsetof is not of an array");
+          int esz = type_size(ty->base);
+          if (esz < 0)
+            error_at(tok->loc, "array in __builtin_offsetof has an incomplete element type");
+          offset += idx * esz;
+          ty = ty->base;
+        } else
+          break;
+      }
+      expect_punct(")");
+      Node *n = node_new(ND_NUM);
+      n->val = offset;
+      n->is_unsigned = 1;
+      return n;
+    }
     if (strcmp(t->name, "__builtin_expect") == 0) {
       /* __builtin_expect(e, v): the value of e; the hint half is
        * parsed and dropped, since there is no branch-prediction pass
