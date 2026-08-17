@@ -10,8 +10,9 @@
  * named form "args...", and the C23 __VA_OPT__ conditional part), #undef,
  * #include ("..." resolves against the including file's directory and
  * the -I dirs, "<...>" against the -I dirs only), #ifdef/#ifndef/#if
- * (constant integer expressions, the defined operator, and constants
- * that are single-token macros), #elif, #else, #endif, and the dynamic
+ * (constant integer expressions, the defined operator, __has_include,
+ * and constants that are single-token macros), #elif, #else, #endif,
+ * and the dynamic
  * macros __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
  * __x86_64__, __linux__.
  *
@@ -33,6 +34,37 @@ static int incdir_n;
 void add_include_dir(char *dir) {
   incdirs = xrealloc(incdirs, sizeof(char *) * (incdir_n + 1));
   incdirs[incdir_n++] = dir;
+}
+
+/* the include search, shared by #include and __has_include: the
+ * quote form tries the including file's directory first, then the
+ * -I dirs; the angled form only the -I dirs. NULL when not found */
+static char *find_include(char *inc, int angled, char *srcpath) {
+  char *found = NULL;
+  char cand[512];
+  if (!angled) {
+    char *slash = strrchr(srcpath, '/');
+    if (slash) {
+      int dir_len = slash - srcpath;
+      snprintf(cand, sizeof(cand), "%.*s/%s", dir_len, srcpath, inc);
+    } else {
+      snprintf(cand, sizeof(cand), "%s", inc);
+    }
+    FILE *f = fopen(cand, "r");
+    if (f) {
+      fclose(f);
+      found = xstrndup(cand, strlen(cand));
+    }
+  }
+  for (int i = 0; !found && i < incdir_n; i++) {
+    snprintf(cand, sizeof(cand), "%s/%s", incdirs[i], inc);
+    FILE *f = fopen(cand, "r");
+    if (f) {
+      fclose(f);
+      found = xstrndup(cand, strlen(cand));
+    }
+  }
+  return found;
 }
 
 /* -------- macros -------- */
@@ -311,6 +343,10 @@ static int builtin_name(char *s) {
 
 static long eval_lor(Token **pp);
 
+/* the including file's path, for __has_include's "..." form, which
+ * resolves against it exactly like #include does */
+static char *has_srcpath;
+
 static int is_punct(Token *t, char c) {
   return t->kind == TK_PUNCT && t->len == 1 && t->loc[0] == c;
 }
@@ -349,6 +385,50 @@ static long eval_primary(Token **pp) {
       if (paren && !is_punct(n, ')'))
         error_at(n->loc, "expected ')' after defined");
       *pp = n->next;
+      return v;
+    }
+    if (strcmp(t->name, "__has_include") == 0) {
+      /* __has_include(<...> | "..."): 1 when the file would be found
+       * by #include, 0 otherwise - gcc's feature-detection operator.
+       * the operand must be a literal header-name form, no macro
+       * expansion (gcc rejects __has_include(HDR) the same way), and
+       * the two forms search exactly like #include ("..." from the
+       * including file's directory, then the -I dirs; "<...>" against
+       * the -I dirs only) */
+      Token *n = t->next;
+      if (!is_punct(n, '('))
+        error_at(n->loc, "expected '(' after __has_include");
+      int depth = 0;
+      Token *as = n->next;
+      Token *close = as;
+      for (; close->kind != TK_EOF; close = close->next) {
+        if (is_punct(close, '('))
+          depth++;
+        else if (is_punct(close, ')')) {
+          if (depth == 0)
+            break;
+          depth--;
+        }
+      }
+      if (close->kind == TK_EOF)
+        error_at(t->loc, "unterminated __has_include");
+      char *inc = NULL;
+      int angled = 0;
+      if (as != close && as->next == close && as->kind == TK_STR) {
+        inc = as->str;
+      } else if (as != close && is_punct(as, '<')) {
+        Token *gt = as;
+        while (gt->next != close && !is_punct(gt, '>'))
+          gt = gt->next;
+        if (is_punct(gt, '>') && gt->next == close) {
+          angled = 1;
+          inc = xstrndup(as->loc + 1, gt->loc - as->loc - 1);
+        }
+      }
+      if (!inc)
+        error_at(t->loc, "expected \"FILENAME\" or <FILENAME> in __has_include");
+      long v = find_include(inc, angled, has_srcpath) != NULL;
+      *pp = close->next;
       return v;
     }
     /* a single-token integer macro (or a one-hop alias to one) */
@@ -976,6 +1056,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
   int active = active_now();
 
   if (directive_is(name, "if")) {
+    has_srcpath = srcpath;
     long v = active ? eval_if_expr(name->next) : 0;
     if (cond_n >= MAX_COND_DEPTH)
       error_at(t->loc, "#if nested too deep");
@@ -1010,7 +1091,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     Cond *c = &conds[cond_n - 1];
     if (c->ever_on)
       error_at(t->loc, "#elif after a taken branch");
-    long v = c->parent_active ? eval_if_expr(name->next) : 0;
+    long v = c->parent_active ? (has_srcpath = srcpath, eval_if_expr(name->next)) : 0;
     int branch = c->parent_active && v;
     c->active = branch;
     c->ever_on = branch;
@@ -1147,7 +1228,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
         gt = gt->next;
       if (gt->kind == TK_EOF)
         error_at(p->loc, "unterminated <...> include");
-      inc = xstrndup(p->loc, gt->loc + 1 - p->loc);
+      inc = xstrndup(p->loc + 1, gt->loc - p->loc - 1);
       angled = 1;
     } else {
       error_at(p->loc, "expected file name after #include");
@@ -1157,34 +1238,13 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     if (depth >= MAX_INCLUDE_DEPTH)
       error_at(t->loc, "#include nested too deep");
 
-    /* "..." resolves against the including file's directory first,
-     * "<...>" goes straight to the -I dirs */
-    char *found = NULL;
-    char cand[512];
-    if (!angled) {
-      char *slash = strrchr(srcpath, '/');
-      if (slash) {
-        int dir_len = slash - srcpath;
-        snprintf(cand, sizeof(cand), "%.*s/%s", dir_len, srcpath, inc);
-      } else {
-        snprintf(cand, sizeof(cand), "%s", inc);
-      }
-      FILE *f = fopen(cand, "r");
-      if (f) {
-        fclose(f);
-        found = cand;
-      }
-    }
-    for (int i = 0; !found && i < incdir_n; i++) {
-      snprintf(cand, sizeof(cand), "%s/%s", incdirs[i], inc);
-      FILE *f = fopen(cand, "r");
-      if (f) {
-        fclose(f);
-        found = cand;
-      }
-    }
-    if (!found)
-      error_at(t->loc, "cannot open include file '%s'", inc);
+/* "..." resolves against the including file's directory first,
+   * "<...>" goes straight to the -I dirs; the same search backs
+   * #include and __has_include */
+  char *found = find_include(inc, angled, srcpath);
+  if (!found) {
+    error_at(t->loc, "cannot open include file '%s'", inc);
+  }
 
     char *save_file = cur_file;
     char *buf = read_file(found);

@@ -273,7 +273,32 @@ o";
   check += (VONLY(7) == 7);               /* single-token slice */
   check += (VUNUSED(8) == 8);             /* the named vararg may stay unused */
 
-  if (check != 85)
+  /* __has_include: the include search without the include, gcc's
+   * feature-detection; "..." resolves from this file's directory
+   * (tests/), "<...>" from the -I dirs, which the harness does not
+   * pass, so the angled form is 0 */
+#if __has_include("inc/preproc.h")
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if __has_include("inc/nope.h")
+  check += 1000;
+#else
+  check += 1;
+#endif
+#if __has_include(<preproc.h>)
+  check += 1000;
+#else
+  check += 1;
+#endif
+#if __has_include("inc/nope.h") == 0 && __has_include("inc/preproc.h") == 1
+  check += 1;
+#else
+  check += 1000;
+#endif
+
+  if (check != 89)
     return check;
   printf("runpreproc ok\n");
   return 0;
