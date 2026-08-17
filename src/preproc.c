@@ -779,6 +779,42 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
     error_at((*pp)->loc, "macro expansion too deep");
 
   Token *t = *pp;
+
+  /* _Pragma("..."): the C99 operator, taken here like gcc's lexer
+   * takes it - before any macro lookup, so a "#define _Pragma ..."
+   * can never fire on an invocation. the argument runs to the
+   * matching ')' at token level, is macro-expanded, and must then be
+   * exactly one string literal; parens inside the string do not
+   * count (modern gcc accepts even unbalanced ones), and the whole
+   * operator disappears, standing in for the #pragma directive lines
+   * that are already skipped elsewhere. any other use of _Pragma is
+   * an error, as in gcc */
+  if (t->kind == TK_IDENT && strcmp(t->name, "_Pragma") == 0) {
+    if (!(t->next->kind == TK_PUNCT && t->next->len == 1 &&
+          *t->next->loc == '('))
+      error_at(t->loc, "expected '(' after _Pragma");
+    int depth = 0;
+    Token *as = t->next->next;
+    Token *arg_end = as;
+    for (; arg_end->kind != TK_EOF; arg_end = arg_end->next) {
+      if (arg_end->kind == TK_PUNCT && arg_end->len == 1) {
+        if (*arg_end->loc == '(')
+          depth++;
+        else if (*arg_end->loc == ')' && depth == 0)
+          break;
+        else if (*arg_end->loc == ')')
+          depth--;
+      }
+    }
+    if (arg_end->kind == TK_EOF)
+      error_at(t->loc, "unterminated _Pragma");
+    Token *expanded = expand_slice(as, arg_end, depth + 1);
+    if (!expanded || expanded->next || expanded->kind != TK_STR)
+      error_at(t->loc, "expected a string literal in _Pragma");
+    *pp = arg_end->next;
+    return;
+  }
+
   Macro *m = (t->kind == TK_IDENT) ? find_macro(t->name) : NULL;
 
   if (!m || is_painted(m)) {

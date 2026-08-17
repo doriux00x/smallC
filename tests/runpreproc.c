@@ -4,7 +4,8 @@
  * directory, # stringize, ## token paste, backslash-newline splicing,
  * variadic macros (... / __VA_ARGS__ with the GNU , ## __VA_ARGS__
  * comma swallow), zero-parameter macros, empty macro arguments,
- * and the dynamic macros __LINE__/__FILE__/
+ * __VA_OPT__ conditional parts, the _Pragma operator, and the
+ * dynamic macros __LINE__/__FILE__/
  * __COUNTER__/__STDC__. every check adds 1 to the counter; the fail
  * branches add 1000 so any mis-evaluated conditional blows the total. */
 
@@ -229,7 +230,24 @@ o";
   check += (XNARGS(a) == 1);
   check += (XNARGS(a, b) == 2);
 
-  if (check != 71)
+  /* _Pragma("..."): the C99 operator, gone after preprocessing like
+   * the #pragma directive lines; the argument is macro-expanded and
+   * must be one string literal, parens inside the string do not
+   * count (modern gcc accepts unbalanced ones), and whitespace is
+   * fine between the operator and its paren */
+  _Pragma("GCC diagnostic push");
+  _Pragma("GCC diagnostic ignored \"-Wswitch\"");
+  _Pragma ("GCC diagnostic pop");
+  _Pragma("pack(push, 1)");
+  _Pragma("x(y");                              /* unbalanced: accepted */
+#define PRAGSTR "pack(push, 1)"
+  _Pragma(PRAGSTR);                            /* the argument expands */
+#define PRG2(x) _Pragma(#x) check += 1;        /* the stringize idiom */
+  PRG2(pack(push, 1));
+#define PPSTMT _Pragma("GCC diagnostic push") check += 1;
+  PPSTMT;
+
+  if (check != 73)
     return check;
   printf("runpreproc ok\n");
   return 0;
