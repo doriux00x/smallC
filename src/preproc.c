@@ -6,7 +6,8 @@
 
 /* a bare-bones preprocessor: #define (object- and function-like,
  * with # stringize and ## token paste), variadic macros ("..." and
- * __VA_ARGS__, with the GNU , ## __VA_ARGS__ comma swallow), #undef,
+ * __VA_ARGS__, with the GNU , ## __VA_ARGS__ comma swallow and the
+ * C23 __VA_OPT__ conditional part), #undef,
  * #include ("..." resolves against the including file's directory and
  * the -I dirs, "<...>" against the -I dirs only), #ifdef/#ifndef/#if
  * (constant integer expressions, the defined operator, and constants
@@ -133,6 +134,8 @@ static Token *chain_append(Chain *c, Token *t) {
   return t;
 }
 
+static int is_punct(Token *t, char c);
+
 /* parameter index of t in m's parameter list, -1 if it is not one */
 static int param_index(Macro *m, Token *t) {
   if (t->kind != TK_IDENT || !m->params)
@@ -141,6 +144,33 @@ static int param_index(Macro *m, Token *t) {
     if (strcmp(t->name, m->params[i]) == 0)
       return i;
   return -1;
+}
+
+/* __VA_OPT__: the C23 conditional part of a variadic replacement
+ * list, kept only when the variadic slice is non-empty. gcc matches
+ * on every behavior below, verified against gcc 12: the identifier
+ * in a non-variadic macro or without a following '(' is an error at
+ * the #define, nesting it inside another __VA_OPT__ is an error, and
+ * '##' may not start or end its content */
+static int is_vaopt(Token *t) {
+  return t->kind == TK_IDENT && strcmp(t->name, "__VA_OPT__") == 0;
+}
+
+/* the ')' closing the __VA_OPT__ group opened by 'open' (the '('
+ * right after __VA_OPT__), NULL if the group does not close; the
+ * content is the slice [open->next, ret) */
+static Token *vaopt_close(Token *open, Token *end) {
+  int depth = 0;
+  for (Token *t = open->next; t != end; t = t->next) {
+    if (is_punct(t, '('))
+      depth++;
+    else if (is_punct(t, ')')) {
+      if (depth == 0)
+        return t;
+      depth--;
+    }
+  }
+  return NULL;
 }
 
 /* #x -> a string literal token holding the argument's spelling; the
@@ -495,28 +525,114 @@ static Token *expand_slice(Token *start, Token *end, int depth) {
   return c.head;
 }
 
-/* substitute the macro body into a fresh chain: parameters become
- * their arguments (expanded on first non-## use), #x owns the raw
- * spelling of its argument, and a##b fuses the boundary tokens into
- * one (operands next to ## are used unexpanded, as 6.10.3.1 demands).
- * nothing else expands here: the caller rescans the chain, so a body
- * like CAT(pre, n) sees the substituted arguments, not the parameter
- * names. args/ends hold the raw argument slices; object-like macros
- * pass NULL for all three */
-static void subst_body(Macro *m, Token **args, Token **ends,
-                       Token **expanded, Chain *out, int depth) {
-  Chain body;
-  chain_init(&body);
+/* substitute the token slice [start, end) into the output chain:
+ * parameters become their arguments (expanded on first non-## use),
+ * #x owns the raw spelling of its argument, a##b fuses the boundary
+ * tokens into one (operands next to ## are used unexpanded, as
+ * 6.10.3.1 demands), and __VA_OPT__(content) keeps its content only
+ * when the variadic slice is non-empty. nothing else expands here:
+ * the caller rescans the chain, so a body like CAT(pre, n) sees the
+ * substituted arguments, not the parameter names. args/ends hold the
+ * raw argument slices; object-like macros pass NULL for all three */
+static void subst_body_range(Macro *m, Token **args, Token **ends,
+                             Token **expanded, Token *start, Token *end,
+                             Chain *out, int depth) {
   Token *tail = NULL;
-  Token *b = m->body;
-  while (b != m->body_end) {
+  Token *b = start;
+  while (b != end) {
+    /* __VA_OPT__(content): with an empty variadic slice the whole
+     * group vanishes; otherwise the content is substituted like a
+     * nested body (so params, # and ## all work inside it). a '##'
+     * right after the group pastes with the content's last token
+     * ("__VA_OPT__(x) ## y" gives xy, or plain y when empty) */
+    if (is_vaopt(b) && b->next != end && is_punct(b->next, '(')) {
+      Token *cl = vaopt_close(b->next, end);
+      if (!cl)
+        error_at(b->loc, "unterminated __VA_OPT__");
+      int vidx = m->nparams - 1;
+      Token *after = cl->next;
+      if (after != end && after->kind == TK_PUNCT && after->len == 2 &&
+          *after->loc == '#') {
+        Token *right = after->next;
+        Chain cs;
+        chain_init(&cs);
+        if (args[vidx] != ends[vidx])
+          subst_body_range(m, args, ends, expanded, b->next->next, cl, &cs, depth);
+        chain_end(&cs);
+        Token *l_last = NULL;
+        Token *ct = cs.head;
+        for (; ct && ct->next; ct = ct->next)
+          tail = chain_append(out, copy_token(ct));
+        if (ct)
+          l_last = ct;
+        int ridx = (right != end) ? param_index(m, right) : -1;
+        if (ridx == m->nparams - 1 && l_last && is_punct(l_last, ',')) {
+          /* __VA_OPT__(,) ## __VA_ARGS__: the comma produced by the
+           * group rides the GNU comma-swallow, surviving exactly when
+           * the variadic slice is non-empty and bringing the fully
+           * expanded tail with it (no paste) */
+          if (args[ridx] != ends[ridx]) {
+            tail = chain_append(out, copy_token(l_last));
+            if (!expanded[ridx])
+              expanded[ridx] = expand_slice(args[ridx], ends[ridx], depth + 1);
+            for (Token *ct = copy_chain(expanded[ridx]); ct; ct = ct->next)
+              tail = chain_append(out, ct);
+          }
+          b = (right == end) ? end : right->next;
+          continue;
+        }
+        if (right != end && is_vaopt(right)) {
+          /* __VA_OPT__(x) ## __VA_OPT__(y): the two contents paste */
+          Token *cl2 = vaopt_close(right->next, end);
+          if (!cl2)
+            error_at(right->loc, "unterminated __VA_OPT__");
+          Chain cs2;
+          chain_init(&cs2);
+          if (args[vidx] != ends[vidx])
+            subst_body_range(m, args, ends, expanded, right->next->next, cl2, &cs2, depth);
+          chain_end(&cs2);
+          if (l_last && cs2.head)
+            tail = chain_append(out, paste_tokens(l_last, cs2.head));
+          else if (l_last)
+            tail = chain_append(out, copy_token(l_last));
+          for (Token *t2 = cs2.head ? cs2.head->next : NULL; t2; t2 = t2->next)
+            tail = chain_append(out, copy_token(t2));
+          b = (cl2 == end) ? cl2 : cl2->next;
+          continue;
+        }
+        int ridx2 = (right != end) ? param_index(m, right) : -1;
+        Token *rf = NULL;
+        if (ridx2 >= 0) {
+          if (args[ridx2] != ends[ridx2])
+            rf = args[ridx2];
+        } else if (right != end) {
+          rf = right;
+        }
+        if (l_last && rf)
+          tail = chain_append(out, paste_tokens(l_last, rf));
+        else if (l_last)
+          tail = chain_append(out, copy_token(l_last));
+        else if (rf)
+          tail = chain_append(out, copy_token(rf));
+        if (ridx2 >= 0 && args[ridx2] != ends[ridx2])
+          for (Token *ct2 = args[ridx2]->next; ct2 != ends[ridx2]; ct2 = ct2->next)
+            tail = chain_append(out, copy_token(ct2));
+        b = (right == end) ? right : right->next;
+        continue;
+      }
+      if (args[vidx] != ends[vidx])
+        subst_body_range(m, args, ends, expanded, b->next->next, cl, out, depth);
+      b = cl->next;
+      continue;
+    }
+
     /* #param */
     if (b->kind == TK_PUNCT && *b->loc == '#' && b->len == 1) {
       Token *pm = b->next;
       int idx = param_index(m, pm);
       if (idx < 0)
         error_at(b->loc, "'#' must be followed by a macro parameter");
-      tail = chain_append(&body, stringize_token(args[idx], ends[idx], b));
+      tail = chain_append(out, stringize_token(args[idx], ends[idx], b));
       b = pm->next;
       continue;
     }
@@ -524,12 +640,12 @@ static void subst_body(Macro *m, Token **args, Token **ends,
     /* ## alone: the left operand is already the chain tail */
     if (b->kind == TK_PUNCT && *b->loc == '#' && b->len == 2) {
       Token *right = b->next;
-      int ridx = (right != m->body_end) ? param_index(m, right) : -1;
+      int ridx = (right != end) ? param_index(m, right) : -1;
       Token *rf = NULL;
       if (ridx >= 0) {
         if (args[ridx] != ends[ridx])
           rf = args[ridx];
-      } else if (right != m->body_end) {
+      } else if (right != end) {
         rf = right;
       }
       if (tail && rf) {
@@ -538,23 +654,23 @@ static void subst_body(Macro *m, Token **args, Token **ends,
         *tail = *m2;
         tail->next = nx;
       } else if (rf) {
-        tail = chain_append(&body, copy_token(rf));
+        tail = chain_append(out, copy_token(rf));
       }
       if (ridx >= 0 && args[ridx] != ends[ridx])
         for (Token *ct = args[ridx]->next; ct != ends[ridx]; ct = ct->next)
-          tail = chain_append(&body, copy_token(ct));
-      b = (right == m->body_end) ? right : right->next;
+          tail = chain_append(out, copy_token(ct));
+      b = (right == end) ? right : right->next;
       continue;
     }
 
     /* x##: the left operand, used unexpanded; all its tokens but the
      * last precede the paste, the right operand's first token pairs
      * with it and the rest follows (6.10.3.3) */
-    if (b->next != m->body_end && b->next->kind == TK_PUNCT &&
+    if (b->next != end && b->next->kind == TK_PUNCT &&
         *b->next->loc == '#' && b->next->len == 2) {
       Token *right = b->next->next;
       int lidx = param_index(m, b);
-      int ridx = (right != m->body_end) ? param_index(m, right) : -1;
+      int ridx = (right != end) ? param_index(m, right) : -1;
       Token *l_last = NULL;
       int l_empty = 0;
       if (lidx >= 0) {
@@ -563,7 +679,7 @@ static void subst_body(Macro *m, Token **args, Token **ends,
         } else {
           Token *ct = args[lidx];
           while (ct->next != ends[lidx]) {
-            tail = chain_append(&body, copy_token(ct));
+            tail = chain_append(out, copy_token(ct));
             ct = ct->next;
           }
           l_last = ct;
@@ -575,7 +691,7 @@ static void subst_body(Macro *m, Token **args, Token **ends,
       if (ridx >= 0) {
         if (args[ridx] != ends[ridx])
           rf = args[ridx];
-      } else if (right != m->body_end) {
+      } else if (right != end) {
         rf = right;
       }
       /* GNU , ## __VA_ARGS__: the comma survives only when the
@@ -583,25 +699,49 @@ static void subst_body(Macro *m, Token **args, Token **ends,
        * tail with it (no paste) */
       if (m->is_varargs && ridx == m->nparams - 1 && is_punct(b, ',')) {
         if (args[ridx] != ends[ridx]) {
-          tail = chain_append(&body, copy_token(b));
+          tail = chain_append(out, copy_token(b));
           if (!expanded[ridx])
             expanded[ridx] = expand_slice(args[ridx], ends[ridx], depth + 1);
           for (Token *ct = copy_chain(expanded[ridx]); ct; ct = ct->next)
-            tail = chain_append(&body, ct);
+            tail = chain_append(out, ct);
         }
-        b = (right == m->body_end) ? right : right->next;
+        b = (right == end) ? right : right->next;
+        continue;
+      }
+      /* x ## __VA_OPT__(y): the content's first token pairs with x
+       * ("x ## __VA_OPT__(y)" gives xy, or plain x when the slice is
+       * empty) */
+      if (right != end && is_vaopt(right)) {
+        int vidx = m->nparams - 1;
+        Token *cl = vaopt_close(right->next, end);
+        if (!cl)
+          error_at(right->loc, "unterminated __VA_OPT__");
+        Chain cs;
+        chain_init(&cs);
+        if (args[vidx] != ends[vidx])
+          subst_body_range(m, args, ends, expanded, right->next->next, cl, &cs, depth);
+        chain_end(&cs);
+        if (l_last && cs.head)
+          tail = chain_append(out, paste_tokens(l_last, cs.head));
+        else if (l_last && !l_empty)
+          tail = chain_append(out, copy_token(l_last));
+        else if (cs.head)
+          tail = chain_append(out, copy_token(cs.head));
+        for (Token *ct = cs.head ? cs.head->next : NULL; ct; ct = ct->next)
+          tail = chain_append(out, copy_token(ct));
+        b = (cl == end) ? cl : cl->next;
         continue;
       }
       if (l_last && rf)
-        tail = chain_append(&body, paste_tokens(l_last, rf));
+        tail = chain_append(out, paste_tokens(l_last, rf));
       else if (l_last && !l_empty)
-        tail = chain_append(&body, copy_token(l_last));
+        tail = chain_append(out, copy_token(l_last));
       else if (rf)
-        tail = chain_append(&body, copy_token(rf));
+        tail = chain_append(out, copy_token(rf));
       if (ridx >= 0 && args[ridx] != ends[ridx])
         for (Token *ct = args[ridx]->next; ct != ends[ridx]; ct = ct->next)
-          tail = chain_append(&body, copy_token(ct));
-      b = (right == m->body_end) ? right : right->next;
+          tail = chain_append(out, copy_token(ct));
+      b = (right == end) ? right : right->next;
       continue;
     }
 
@@ -612,16 +752,23 @@ static void subst_body(Macro *m, Token **args, Token **ends,
         if (!expanded[idx])
           expanded[idx] = expand_slice(args[idx], ends[idx], depth + 1);
         for (Token *ct = copy_chain(expanded[idx]); ct; ct = ct->next)
-          tail = chain_append(&body, ct);
+          tail = chain_append(out, ct);
         b = b->next;
         continue;
       }
     }
 
     /* plain body token: a copy, left for the rescan */
-    tail = chain_append(&body, copy_token(b));
+    tail = chain_append(out, copy_token(b));
     b = b->next;
   }
+}
+
+static void subst_body(Macro *m, Token **args, Token **ends,
+                       Token **expanded, Chain *out, int depth) {
+  Chain body;
+  chain_init(&body);
+  subst_body_range(m, args, ends, expanded, m->body, m->body_end, &body, depth);
   chain_end(&body);
   for (Token *x = body.head; x; )
     expand_unit(&x, out, depth + 1);
@@ -743,6 +890,47 @@ static void core_stream(Token *toks, Chain *out, char *srcpath, int depth,
  * as keywords (TK_IF/TK_ELSE), everything else as TK_IDENT */
 static int directive_is(Token *t, char *s) {
   return t->len == (int)strlen(s) && memcmp(t->loc, s, t->len) == 0;
+}
+
+/* validate a replacement list (or the content of a __VA_OPT__):
+ * # must be followed by a macro parameter, ## may not sit at the
+ * edges, and __VA_OPT__ must be a fully formed, non-nested group of
+ * a variadic macro. the recursion makes a nested __VA_OPT__ (at any
+ * depth inside content) and stray # / ## inside the content errors
+ * at the #define, exactly as gcc does */
+static void validate_body(Macro *m, Token *start, Token *end, int in_vaopt) {
+  for (Token *x = start; x != end; x = x->next) {
+    if (x->kind == TK_PUNCT && *x->loc == '#' && x->len == 1) {
+      if (x->next == end || param_index(m, x->next) < 0)
+        error_at(x->loc, "'#' must be followed by a macro parameter");
+    }
+    if (x->kind == TK_PUNCT && *x->loc == '#' && x->len == 2) {
+      if (x == start || x->next == end)
+        error_at(x->loc, "'##' may not start or end a replacement list");
+    }
+    if (is_vaopt(x)) {
+      if (in_vaopt)
+        error_at(x->loc, "'__VA_OPT__' may not appear inside a __VA_OPT__");
+      if (!m->is_varargs)
+        error_at(x->loc, "'__VA_OPT__' can only appear in the expansion of a variadic macro");
+      if (x->next == end || !is_punct(x->next, '('))
+        error_at(x->loc, "'__VA_OPT__' must be followed by an open parenthesis");
+      Token *first = x->next->next;
+      Token *cl = vaopt_close(x->next, end);
+      if (!cl)
+        error_at(x->loc, "unterminated __VA_OPT__");
+      /* '##' may not be the first or last token of the content */
+      Token *prev = first;
+      for (Token *t = first; t != cl; t = t->next)
+        prev = t;
+      if (cl != first &&
+          ((first->kind == TK_PUNCT && first->len == 2 && *first->loc == '#') ||
+           (prev->kind == TK_PUNCT && prev->len == 2 && *prev->loc == '#')))
+        error_at(x->loc, "'##' cannot appear at either end of __VA_OPT__");
+      validate_body(m, first, cl, 1);
+      x = cl;
+    }
+  }
 }
 
 static void handle_directive(Token **pp, Chain *out, char *srcpath,
@@ -877,16 +1065,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     }
     m->body = b;
     m->body_end = skip_line(&b);
-    for (Token *x = m->body; x != m->body_end; x = x->next) {
-      if (x->kind == TK_PUNCT && *x->loc == '#' && x->len == 1) {
-        if (x->next == m->body_end || param_index(m, x->next) < 0)
-          error_at(x->loc, "'#' must be followed by a macro parameter");
-      }
-      if (x->kind == TK_PUNCT && *x->loc == '#' && x->len == 2) {
-        if (x == m->body || x->next == m->body_end)
-          error_at(x->loc, "'##' may not start or end a replacement list");
-      }
-    }
+    validate_body(m, m->body, m->body_end, 0);
     *pp = m->body_end;
     return;
   }

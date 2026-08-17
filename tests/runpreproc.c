@@ -187,7 +187,49 @@ o";
   check += (ZERO0() == 0);                     /* zero-parameter macro */
   check += (strcmp(E2(, 5), "") == 0);         /* empty argument stringized */
 
-  if (check != 52)
+  /* __VA_OPT__: the content survives only when the variadic slice is
+   * non-empty (C23, gcc 8+); it can sit anywhere in the list, hold
+   * # stringize, ## paste, params and __VA_ARGS__ itself, and pairs
+   * with the GNU , ## __VA_ARGS__ comma swallow without doubling */
+#define MAYBE(...) __VA_OPT__(check += 1;)
+  MAYBE();
+  MAYBE(1);                                    /* only the non-empty call fires */
+#define VEMPTY(...) __VA_OPT__()
+  VEMPTY();
+  VEMPTY(1);                                   /* empty content, both spellings */
+#define VUSE2(a, ...) a __VA_OPT__(+ 1)
+  check += (VUSE2(5) == 5);                    /* empty slice: no content */
+  check += (VUSE2(5, 9) == 6);                 /* non-empty: content kept */
+#define VTAIL(a, ...) a __VA_OPT__(,) __VA_ARGS__
+  check += (VTAIL(5) == 5);                    /* empty: no comma, no tail */
+  check += (VTAIL(5, 9) == 9);                 /* non-empty: the , 9 tail */
+#define VSTRV(...) __VA_OPT__(#__VA_ARGS__)
+  check += (strcmp(VSTRV(1 + 2), "1 + 2") == 0);
+#define VV(...) __VA_OPT__(__VA_ARGS__)
+  check += (VV(1, 2) == 2);                    /* __VA_ARGS__ inside the content */
+#define VDP(fmt, ...) printf(fmt __VA_OPT__(,) ## __VA_ARGS__)
+  check += (VDP("a%d", 3) == 2);               /* comma + args, no paste */
+  check += (VDP("b") == 1);                    /* both the comma and args vanish */
+#define VPL(...) 1 ## __VA_OPT__(2)
+  check += (VPL() == 1);                       /* empty: paste skipped, left alone */
+  check += (VPL(1) == 12);
+#define VPR(...) __VA_OPT__(1) ## 2
+  check += (VPR() == 2);                       /* empty: right operand alone */
+  check += (VPR(1) == 12);
+#define VB2(...) __VA_OPT__(1) ## __VA_OPT__(2)
+  check += (VB2(1) == 12);                     /* the two contents paste */
+#define VCONT(...) __VA_OPT__(1 ## 2)
+  check += (VCONT(1) == 12);                   /* paste inside the content */
+#define VSTART(...) __VA_OPT__(check += 1;) 3
+  VSTART();                                    /* group at the list start */
+  VSTART(1);                                   /* only this one increments */
+#define XNARGS(...) XNARGS_(__VA_OPT__(__VA_ARGS__, ) 5, 4, 3, 2, 1, 0)
+#define XNARGS_(e1, e2, e3, e4, e5, n, ...) n
+  check += (XNARGS() == 0);                    /* the __VA_OPT__ count idiom */
+  check += (XNARGS(a) == 1);
+  check += (XNARGS(a, b) == 2);
+
+  if (check != 71)
     return check;
   printf("runpreproc ok\n");
   return 0;
