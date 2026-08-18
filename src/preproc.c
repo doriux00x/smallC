@@ -385,7 +385,10 @@ static long eval_primary(Token **pp) {
       n = n->next;
       if (paren && !is_punct(n, ')'))
         error_at(n->loc, "expected ')' after defined");
-      *pp = n->next;
+      /* with parens the operand ends at ')', so the continuation is
+       * its next token; without them it is the operand itself, and
+       * the caller's at_bol line discipline handles the rest */
+      *pp = paren ? n->next : n;
       return v;
     }
     if (strcmp(t->name, "__has_include") == 0) {
@@ -1090,8 +1093,15 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     if (!cond_n)
       error_at(t->loc, "stray #elif");
     Cond *c = &conds[cond_n - 1];
-    if (c->ever_on)
-      error_at(t->loc, "#elif after a taken branch");
+    if (c->seen_else)
+      error_at(t->loc, "#elif after #else");
+    if (c->ever_on) {
+      /* the chain already took a branch; this #elif is skipped,
+       * as gcc treats it */
+      c->active = 0;
+      *pp = skip_line(&name->next);
+      return;
+    }
     long v = c->parent_active ? (has_srcpath = srcpath, eval_if_expr(name->next)) : 0;
     int branch = c->parent_active && v;
     c->active = branch;

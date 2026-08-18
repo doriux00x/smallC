@@ -1,12 +1,12 @@
 /* preprocessor: object-like and function-like macros, #if/#ifdef/
- * #ifndef/#elif/#else/#endif with constant expressions and defined(),
- * #undef, quote-form #include resolved against the including file's
- * directory, # stringize, ## token paste, backslash-newline splicing,
- * variadic macros (... / __VA_ARGS__ with the GNU , ## __VA_ARGS__
- * comma swallow), zero-parameter macros, empty macro arguments,
- * GNU named variadic parameters ("args..."), __VA_OPT__ conditional
- * parts, the _Pragma operator, #line N ["file"], and the dynamic
- * macros
+ * #ifndef/#elif/#else/#endif with constant expressions and defined()
+ * (with or without the GNU parentheses), #undef, quote-form #include
+ * resolved against the including file's directory, # stringize,
+ * ## token paste, backslash-newline splicing, variadic macros
+ * (... / __VA_ARGS__ with the GNU , ## __VA_ARGS__ comma swallow),
+ * zero-parameter macros, empty macro arguments, GNU named variadic
+ * parameters ("args..."), __VA_OPT__ conditional parts, the _Pragma
+ * operator, #line N ["file"], and the dynamic macros
  * __LINE__/__FILE__/
  * __COUNTER__/__STDC__. every check adds 1 to the counter; the fail
  * branches add 1000 so any mis-evaluated conditional blows the total. */
@@ -117,6 +117,36 @@ int main(void) {
 
   /* an #else after a taken #if is legal and skipped */
 #if 1
+  check += 1;
+#else
+  check += 1000;
+#endif
+
+  /* gcc-ism: `defined NAME` without parentheses */
+#if defined VERSION
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if defined NOPE2
+  check += 1000;
+#else
+  check += 1;
+#endif
+
+  /* a taken #if silently skips the rest of the chain */
+#if 1
+  check += 1;
+#elif defined NOPE2
+  check += 1000;
+#else
+  check += 1000;
+#endif
+
+  /* an #elif after an untaken #if is evaluated and taken */
+#if 0
+  check += 1000;
+#elif defined VERSION
   check += 1;
 #else
   check += 1000;
@@ -332,7 +362,7 @@ o";
   check += 1000;
 #endif
 
-  if (check != 97)
+  if (check != 101)
     return check;
   printf("runpreproc ok\n");
   return 0;
