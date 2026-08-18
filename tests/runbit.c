@@ -231,5 +231,67 @@ int main() {
   if (pad.a != 1) return 70;
   if (pad.b != 2) return 71;
 
+  // braced initializers: fields merge into their storage unit, both
+  // as a temporary (runtime merges) and as a static (one .long)
+  struct flags i1 = { 2, -3, 1000000 };
+  if (i1.a != 2) return 72;
+  if (i1.b != -3) return 73;
+  if (i1.c != 1000000) return 74;
+  if (i1.a != 2 || i1.b != -3 || i1.c != 1000000) return 75;
+
+  // a short list zero-fills the rest of the unit without touching
+  // the fields that got values
+  struct { unsigned a : 3; unsigned b : 5; unsigned c : 8; } i2 = { 5 };
+  if (i2.a != 5) return 76;
+  if (i2.b != 0) return 77;
+  if (i2.c != 0) return 78;
+  i2.a = 5;
+  if (i2.a != 5) return 79;
+  if (i2.b != 0) return 80;
+
+  // signedness and wraparound apply to initializer values too
+  struct { int a : 4; int b : 4; } i3 = { 8, -8 };
+  if (i3.a != -8) return 81;
+  if (i3.b != -8) return 82;
+
+  // designators target individual fields, in any order
+  struct { unsigned a : 3; unsigned b : 5; } i4 = { .b = 17, .a = 6 };
+  if (i4.a != 6) return 83;
+  if (i4.b != 17) return 84;
+  if (sizeof(i4) != 4) return 85;
+
+  // a braced scalar for one field
+  struct { unsigned a : 3; unsigned b : 5; } i5 = { {4}, 31 };
+  if (i5.a != 4) return 86;
+  if (i5.b != 31) return 87;
+
+  // _Bool normalization in initializers
+  struct { _Bool a : 1; _Bool b : 1; } i6 = { 2, 3 };
+  if (i6.a != 1) return 88;
+  if (i6.b != 1) return 89;
+
+  // bit-fields nested inside arrays and member structs
+  struct { unsigned a : 3; unsigned b : 5; } iarr[2] = { { 1, 2 }, { 7, 31 } };
+  if (iarr[0].a != 1) return 90;
+  if (iarr[0].b != 2) return 91;
+  if (iarr[1].a != 7) return 92;
+  if (iarr[1].b != 31) return 93;
+
+  // a static inside a function initializes via the .data path; 29
+  // in a signed 5-bit field wraps to -3
+  static struct { int a : 3; int b : 5; } ist = { 3, 29 };
+  if (ist.a != 3) return 94;
+  if (ist.b != -3) return 95;
+
+  // global braces
+  struct { unsigned a : 4; unsigned b : 12; } ig = { 15, 4095 };
+  if (ig.a != 15) return 96;
+  if (ig.b != 4095) return 97;
+
+  // an out-of-range value wraps to the field width in the unit
+  struct { unsigned a : 3; unsigned b : 29; } i7 = { 9, 0x1FFFFFFF };
+  if (i7.a != 1) return 98;
+  if (i7.b != 0x1FFFFFFF) return 99;
+
   return 0;
 }

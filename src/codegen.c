@@ -735,7 +735,48 @@ static void init_add(Type *ty, int off, Node *expr) {
   init_leafs[init_leaf_n].ty = ty;
   init_leafs[init_leaf_n].offset = off;
   init_leafs[init_leaf_n].expr = expr;
+  init_leafs[init_leaf_n].bit_pos = -1;
   init_leaf_n++;
+}
+
+/* a bit-field leaf: a slot inside a storage unit, merged with its
+ * siblings when the unit is emitted */
+static void init_add_bitfield(Type *ty, int off, int pos, int w, Node *expr) {
+  if (init_counting)
+    return;
+  init_leafs = xrealloc(init_leafs, sizeof(Init) * (init_leaf_n + 1));
+  init_leafs[init_leaf_n].ty = ty;
+  init_leafs[init_leaf_n].offset = off;
+  init_leafs[init_leaf_n].expr = expr;
+  init_leafs[init_leaf_n].bit_pos = pos;
+  init_leafs[init_leaf_n].bit_width = w;
+  init_leaf_n++;
+}
+
+/* one member's zero fill: bit-fields must clear their field inside
+ * the unit rather than spill a whole-unit zero over their siblings */
+static Node *init_fill_members(Type *ty, int off, Node *es);
+static void init_zero_member(Member *m, int off) {
+  if (m->is_bitfield)
+    init_add_bitfield(m->type, off + m->offset, m->bit_offset,
+                      m->bit_width, NULL);
+  else if (is_agg(m->type))
+    init_fill_members(m->type, off + m->offset, NULL);
+  else
+    init_add(m->type, off + m->offset, NULL);
+}
+
+/* one list element into a bit-field slot; a braced scalar unwraps */
+static void init_bitfield_fill(Type *ty, int off, int pos, int w,
+                               Node *es) {
+  if (es && es->kind == ND_INIT_LIST) {
+    if (!es->elems || es->elems->next)
+      error("excess elements in initializer");
+    es = es->elems;
+  }
+  if (es && es->kind == ND_STR)
+    error("invalid string initializer");
+  init_add_bitfield(ty, off, pos, w, es);
 }
 
 /* scalar slots one element of an aggregate consumes; a zero-length
@@ -840,12 +881,8 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
   for (Member *m = ty->members; m;
        m = (ty->kind == TY_UNION) ? NULL : m->next) {
     if (!es) {
-      for (; m; m = m->next) {
-        if (is_agg(m->type))
-          init_fill_members(m->type, off + m->offset, NULL);
-        else
-          init_add(m->type, off + m->offset, NULL);
-      }
+      for (; m; m = m->next)
+        init_zero_member(m, off);
       return NULL;
     }
     if (es->kind == ND_DESIG) {
@@ -856,29 +893,35 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
       Member *dm = find_member(ty, es->name);
       if (!dm)
         error("no member named '%s'", es->name);
-      if (dm->is_bitfield)
-        error("a bit-field cannot be initialized by a brace list");
       Member *p = m;
       for (; p && p != dm; p = p->next)
         ;
       if (!p) {
         /* the target member was already filled: override it in place */
-        init_fill(dm->type, off + dm->offset, es->then);
+        if (dm->is_bitfield)
+          init_bitfield_fill(dm->type, off + dm->offset, dm->bit_offset,
+                             dm->bit_width, es->then);
+        else
+          init_fill(dm->type, off + dm->offset, es->then);
         es = es->next;
         continue;
       }
-      for (; m != dm; m = m->next) {
-        if (is_agg(m->type))
-          init_fill_members(m->type, off + m->offset, NULL);
-        else
-          init_add(m->type, off + m->offset, NULL);
-      }
-      init_fill(dm->type, off + dm->offset, es->then);
+      for (; m != dm; m = m->next)
+        init_zero_member(m, off);
+      if (dm->is_bitfield)
+        init_bitfield_fill(dm->type, off + dm->offset, dm->bit_offset,
+                           dm->bit_width, es->then);
+      else
+        init_fill(dm->type, off + dm->offset, es->then);
       es = es->next;
       continue;
     }
-    if (m->is_bitfield)
-      error("a bit-field cannot be initialized by a brace list");
+    if (m->is_bitfield) {
+      init_bitfield_fill(m->type, off + m->offset, m->bit_offset,
+                         m->bit_width, es);
+      es = es->next;
+      continue;
+    }
     es = init_fill(m->type, off + m->offset, es);
   }
   /* a designator left over after the members ran out targets an
@@ -890,8 +933,10 @@ static Node *init_fill_members(Type *ty, int off, Node *es) {
     if (!dm)
       error("no member named '%s'", es->name);
     if (dm->is_bitfield)
-      error("a bit-field cannot be initialized by a brace list");
-    init_fill(dm->type, off + dm->offset, es->then);
+      init_bitfield_fill(dm->type, off + dm->offset, dm->bit_offset,
+                         dm->bit_width, es->then);
+    else
+      init_fill(dm->type, off + dm->offset, es->then);
     es = es->next;
   }
   return es;
@@ -936,10 +981,7 @@ static Node *init_fill(Type *ty, int off, Node *es) {
         for (Member *o = ty->members; o; o = o->next) {
           if (o == m)
             continue;
-          if (is_agg(o->type))
-            init_fill_members(o->type, off + o->offset, NULL);
-          else
-            init_add(o->type, off + o->offset, NULL);
+          init_zero_member(o, off);
         }
         off += m->offset;
         ty = m->type;
@@ -1628,10 +1670,11 @@ static void gen_bitfield_load(Node *n) {
  * merges the field into the unit with a read-modify-write. %rax ends
  * with the plain stored value (the expression's value), and %rcx is
  * untouched so postfix ++/-- can hold the old value in it */
-static void gen_bitfield_store(Node *n) {
-  int b = n->bit_offset;
-  int w = n->bit_width;
-  if (n->type->is_bool) {
+/* merge %rax's value into the bit-field at [b, b+w) of the storage
+ * unit whose address is in %rdi; shared by assignments and the
+ * runtime half of bit-field initializers */
+static void gen_bitfield_merge(int b, int w, Type *ty) {
+  if (ty->is_bool) {
     /* _Bool stores normalize to 0/1; the raw mask below would turn
      * a 2 stored into a 1-bit field into 0 */
     fprintf(out, "  test %%rax, %%rax\n");
@@ -1650,7 +1693,7 @@ static void gen_bitfield_store(Node *n) {
     fprintf(out, "  shlq $%d, %%rax\n", b);   /* into place */
   fprintf(out, "  push %%rax\n");   /* [plain value, positioned] */
   stack_depth++;
-  switch (n->type->size) {
+  switch (ty->size) {
     case 1:
       fprintf(out, "  movzbl (%%rdi), %%edx\n");
       break;
@@ -1680,7 +1723,7 @@ static void gen_bitfield_store(Node *n) {
   fprintf(out, "  pop %%rax\n");    /* the positioned value */
   stack_depth--;
   fprintf(out, "  orq %%rax, %%rdx\n");
-  switch (n->type->size) {
+  switch (ty->size) {
     case 1:
       fprintf(out, "  movb %%dl, (%%rdi)\n");
       break;
@@ -1701,9 +1744,13 @@ static void gen_bitfield_store(Node *n) {
      * way the load does: the raw int is not the field's value */
     fprintf(out, "  shlq $%d, %%rax\n", 64 - w);
     fprintf(out, "  %s $%d, %%rax\n",
-            n->type->is_unsigned || n->type->is_bool ? "shrq" : "sarq",
+            ty->is_unsigned || ty->is_bool ? "shrq" : "sarq",
             64 - w);
   }
+}
+
+static void gen_bitfield_store(Node *n) {
+  gen_bitfield_merge(n->bit_offset, n->bit_width, n->type);
 }
 
 static void emit_string(Node *n);
@@ -2830,6 +2877,18 @@ static void gen_init_stores(Node *n) {
     Init *it = &n->inits[i];
     if (it->expr) {
       gen_expr(it->expr);
+      if (it->bit_pos >= 0) {
+        /* a bit-field slot merges into its storage unit instead of
+         * overwriting it, exactly like an assignment does */
+        fprintf(out, "  push %%rax\n");
+        stack_depth++;
+        fprintf(out, "  lea %d(%%rbp), %%rdi\n",
+                n->var->offset + it->offset);
+        fprintf(out, "  pop %%rax\n");
+        stack_depth--;
+        gen_bitfield_merge(it->bit_pos, it->bit_width, it->ty);
+        continue;
+      }
       fprintf(out, "  push %%rax\n");
       stack_depth++;
       fprintf(out, "  lea %d(%%rbp), %%rdi\n",
@@ -2837,6 +2896,15 @@ static void gen_init_stores(Node *n) {
       fprintf(out, "  pop %%rax\n");
       stack_depth--;
     } else {
+      /* a zero bit-field slot clears only its own field: the unit
+       * may hold other slots from earlier in the list */
+      if (it->bit_pos >= 0) {
+        fprintf(out, "  mov $0, %%rax\n");
+        fprintf(out, "  lea %d(%%rbp), %%rdi\n",
+                n->var->offset + it->offset);
+        gen_bitfield_merge(it->bit_pos, it->bit_width, it->ty);
+        continue;
+      }
       /* zero leaf */
       if (it->ty->kind == TY_DOUBLE)
         emit_const(0.0);
@@ -3108,6 +3176,39 @@ static void gen_data(Node *n) {
       }
     }
     int off = 0;
+    /* bit-field units: every leaf inside a storage unit merges into
+     * one emitted slot; each leaf clears its own field before
+     * writing, so a re-designated field's latest value wins */
+    int nunits = 0;
+    int *uoff = xmalloc(sizeof(int) * n->init_n);
+    int *usize = xmalloc(sizeof(int) * n->init_n);
+    unsigned long long *uval =
+        xmalloc(sizeof(unsigned long long) * n->init_n);
+    for (int i = 0; i < n->init_n; i++) {
+      Init *it = &n->inits[i];
+      if (it->bit_pos < 0)
+        continue;
+      int u = -1;
+      for (int j = 0; j < nunits; j++)
+        if (uoff[j] == it->offset)
+          u = j;
+      if (u < 0) {
+        u = nunits++;
+        uoff[u] = it->offset;
+        usize[u] = it->ty->size;
+        uval[u] = 0;
+      }
+      unsigned long long m = it->bit_width >= 64
+                                 ? ~0ULL
+                                 : (1ULL << it->bit_width) - 1;
+      uval[u] &= ~(m << it->bit_pos);
+      if (it->expr) {
+        CVal v = const_fold(it->expr);
+        unsigned long long val =
+            v.is_float ? (long long)v.fval : (long long)v.val;
+        uval[u] |= (val & m) << it->bit_pos;
+      }
+    }
     for (int k = 0; k < merges; k++) {
       int best = -1;
       for (int j = 0; j < merges; j++)
@@ -3120,6 +3221,20 @@ static void gen_data(Node *n) {
       section(dsect);
       if (it->offset > off)
         fprintf(out, "  .zero %d\n", it->offset - off);
+      int u = -1;
+      for (int j = 0; j < nunits; j++)
+        if (uoff[j] == it->offset)
+          u = j;
+      if (u >= 0) {
+        /* a storage unit with bit-fields: one merged directive */
+        fprintf(out, "  .%s %llu\n",
+                usize[u] == 8 ? "quad" :
+                usize[u] == 4 ? "long" :
+                usize[u] == 2 ? "short" : "byte",
+                uval[u]);
+        off = it->offset + usize[u];
+        continue;
+      }
       if (!it->expr) {
         fprintf(out, "  .zero %d\n", it->ty->size);
       } else if (it->ty->kind == TY_DOUBLE) {

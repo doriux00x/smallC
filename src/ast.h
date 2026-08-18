@@ -142,11 +142,14 @@ enum {
 };
 
 /* one scalar slot of a flattened brace initializer; expr is NULL for
- * a zero-filled slot */
+ * a zero-filled slot. a bit-field leaf carries its place inside the
+ * storage unit (bit_pos = -1 for a full-width scalar) */
 typedef struct {
   Type *ty;
   int offset;
   Node *expr;
+  int bit_pos;
+  int bit_width;
 } Init;
 
 struct Node {
