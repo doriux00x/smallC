@@ -72,7 +72,16 @@ test: $(BIN)
 	nowdate="$$(date +'%b %e %Y')" && \
 	nowtime="$$(date +'%H:%M:%S')" && \
 	grep -q "build_date = \"$$nowdate\";" $(OBJDIR)/daytime.out && \
-	grep -q "build_time = \"$$nowtime\";" $(OBJDIR)/daytime.out
+	grep -q "build_time = \"$$nowtime\";" $(OBJDIR)/daytime.out && \
+	echo "== runelifdef ==" && \
+	./$(BIN) -E tests/runelifdef.c > $(OBJDIR)/elifdef.out && \
+	gcc -E -P tests/runelifdef.c > $(OBJDIR)/elifdef.gcc && \
+	diff $(OBJDIR)/elifdef.out $(OBJDIR)/elifdef.gcc && \
+	./$(BIN) tests/runelifdef.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runelifdef $(OBJDIR)/runelifdef.s && \
+	./$(OBJDIR)/runelifdef && \
+	gcc -o $(OBJDIR)/runelifdef.gcc tests/runelifdef.c && \
+	./$(OBJDIR)/runelifdef.gcc
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3

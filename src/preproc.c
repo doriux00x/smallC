@@ -1382,12 +1382,13 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     return;
   }
 
-  if (directive_is(name, "elif")) {
+  if (directive_is(name, "elif") || directive_is(name, "elifdef") ||
+      directive_is(name, "elifndef")) {
     if (!cond_n)
-      error_at(t->loc, "stray #elif");
+      error_at(t->loc, "stray #%s", name->loc);
     Cond *c = &conds[cond_n - 1];
     if (c->seen_else)
-      error_at(t->loc, "#elif after #else");
+      error_at(t->loc, "#%s after #else", name->loc);
     if (c->ever_on) {
       /* the chain already took a branch; this #elif is skipped,
        * as gcc treats it */
@@ -1395,7 +1396,23 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
       *pp = skip_line(&name->next);
       return;
     }
-    long v = c->parent_active ? (has_srcpath = srcpath, eval_if_expr(name->next)) : 0;
+    long v;
+    if (directive_is(name, "elifdef") || directive_is(name, "elifndef")) {
+      /* #elifdef NAME (C23) is #elif defined(NAME): the name is the
+       * one identifier after the directive, the macro table and the
+       * builtins both count, and anything past it is an error, as
+       * in gcc */
+      Token *n = name->next;
+      if (n->kind != TK_IDENT)
+        error_at(n->loc, "expected identifier after #%s", name->loc);
+      if (n->next->kind != TK_EOF && !n->next->at_bol)
+        error_at(n->next->loc, "extra tokens after #%s", name->loc);
+      int d = n->kind == TK_IDENT &&
+              (find_macro(n->name) || builtin_name(n->name));
+      v = directive_is(name, "elifdef") ? d : !d;
+    } else {
+      v = c->parent_active ? (has_srcpath = srcpath, eval_if_expr(name->next)) : 0;
+    }
     int branch = c->parent_active && v;
     c->active = branch;
     c->ever_on = branch;

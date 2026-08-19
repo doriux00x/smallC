@@ -75,7 +75,8 @@ toolchain doing its usual job.
   the result to stdout. `#include` in `"..."` form
   resolves against the including file's directory first and then the
   `-I` dirs; the `<...>` form only searches the `-I` dirs. `#if` /
-  `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif` evaluate
+  `#ifdef` / `#ifndef` / `#elif` / `#elifdef` / `#elifndef` / `#else` /
+  `#endif` evaluate
   constant integer expressions with `defined()`, `__has_include`,
   `__has_attribute(name)` and `__has_builtin(name)` — the latter two
   answer 1 only for what the compiler really implements (the
