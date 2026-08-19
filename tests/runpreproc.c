@@ -7,8 +7,8 @@
  * zero-parameter macros, empty macro arguments, GNU named variadic
  * parameters ("args..."), __VA_OPT__ conditional parts, the _Pragma
  * operator, #line N ["file"], and the dynamic macros
- * __LINE__/__FILE__/
- * __COUNTER__/__STDC__. every check adds 1 to the counter; the fail
+ * __LINE__/__FILE__/__COUNTER__/__STDC__ plus the gcc identification
+ * and platform set. every check adds 1 to the counter; the fail
  * branches add 1000 so any mis-evaluated conditional blows the total. */
 
 #include "inc/preproc.h"
@@ -165,6 +165,46 @@ int main(void) {
 #endif
   check += (__STDC_VERSION__ >= 199901);
   check += (strcmp(__FILE__, "tests/runpreproc.c") == 0);
+
+  /* the gcc identification set and the platform macros: usable as
+   * values in #if (not just as defined() operands), and the
+   * no-underscore gcc aliases exist */
+#if __x86_64__
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if __linux__ && __linux
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if __GNUC__ >= 4
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if __GNUC__ * 100 + __GNUC_MINOR__ >= 400
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if defined __amd64__ && __amd64 == 1
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if defined __GNUC_STDC_INLINE__
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if defined __VERSION__
+  check += 1;
+#else
+  check += 1000;
+#endif
+  check += (sizeof(__VERSION__) > 1);
 
   /* stringize: #x is the argument's spelling as a string */
 #define STR(x) #x
@@ -362,7 +402,7 @@ o";
   check += 1000;
 #endif
 
-  if (check != 101)
+  if (check != 109)
     return check;
   printf("runpreproc ok\n");
   return 0;

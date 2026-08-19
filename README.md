@@ -73,8 +73,13 @@ toolchain doing its usual job.
   and constants that are single-token macros. `#line N ["file"]`
   renumbers the file like gcc does, and `_Pragma` pipes through to
   the skipped-pragma path. The always-on macros are `__LINE__`,
-  `__FILE__`, `__COUNTER__`, `__STDC__`, `__STDC_VERSION__`,
-  `__x86_64__` and `__linux__`. Backslash-newline splicing works
+  `__FILE__`, `__COUNTER__`, `__STDC__`, `__STDC_VERSION__`, the gcc
+  identification set `__GNUC__`/`__GNUC_MINOR__`/`__GNUC_PATCHLEVEL__`/
+  `__GNUC_STDC_INLINE__`/`__VERSION__` (mirrored from the gcc that
+  builds smallcc, so glibc's `__GNUC_PREREQ` gates are satisfied), and
+  the platform macros `__x86_64__`/`__amd64`/`__amd64__` and
+  `__linux__`/`__linux`. `__STDC_VERSION__` stays pinned at 199901,
+  the C99 floor this compiler targets. Backslash-newline splicing works
   everywhere the standard does it: between tokens, in comments, and
   inside string and character literals.
 - Floating point: float and double with SSE codegen, hex float

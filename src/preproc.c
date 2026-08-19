@@ -14,7 +14,9 @@
  * and constants that are single-token macros), #elif, #else, #endif,
  * #line N ["file"], and the dynamic
  * macros __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
- * __x86_64__, __linux__.
+ * the gcc identification set __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__,
+ * __GNUC_STDC_INLINE__, __VERSION__, and the platform macros
+ * __x86_64__/__amd64(__) and __linux__(__).
  *
  * it works on the token stream the lexer produces and splices the
  * expanded tokens back into one flat chain for the parser. macro
@@ -25,6 +27,27 @@
 #define MAX_COND_DEPTH 64
 #define MAX_MACRO_ARGS 64
 #define MAX_PAINT 128
+
+/* the gcc version we claim: mirrored from the compiler building this
+ * one (smallcc is built by gcc), so __GNUC__ and friends agree with
+ * gcc in the selftest's cross-checks and glibc's __GNUC_PREREQ gates
+ * in features.h see a consistent story; the fallback is a floor of
+ * 4.0, which is the version glibc's feature-test headers assume */
+#if defined(__GNUC__)
+#define SELF_GNUC_MAJOR __GNUC__
+#define SELF_GNUC_MINOR __GNUC_MINOR__
+#define SELF_GNUC_PATCH __GNUC_PATCHLEVEL__
+#else
+#define SELF_GNUC_MAJOR 4
+#define SELF_GNUC_MINOR 0
+#define SELF_GNUC_PATCH 0
+#endif
+
+#define SELF_STR2_(x) #x
+#define SELF_STR2(x) SELF_STR2_(x)
+#define SELF_GNUC_VERSION                                                        \
+  SELF_STR2(SELF_GNUC_MAJOR) "." SELF_STR2(SELF_GNUC_MINOR) "."                 \
+      SELF_STR2(SELF_GNUC_PATCH)
 
 /* -------- include search path -------- */
 
@@ -271,6 +294,10 @@ static char *cur_file;
 static char *line_file;   /* the #line-set source name; NULL = cur_file */
 static int counter;
 
+/* -------- dynamic macros -------- */
+
+static long builtin_value(char *s, int line);
+
 static Token *builtin_macro(Token *t) {
   Token *n = NULL;
   if (strcmp(t->name, "__LINE__") == 0) {
@@ -288,6 +315,14 @@ static Token *builtin_macro(Token *t) {
     n->str_len = strlen(n->str);
     return n;
   }
+  if (strcmp(t->name, "__VERSION__") == 0) {
+    n = xmalloc(sizeof(Token));
+    *n = *t;
+    n->kind = TK_STR;
+    n->str = xstrdup(SELF_GNUC_VERSION);
+    n->str_len = strlen(n->str);
+    return n;
+  }
   if (strcmp(t->name, "__COUNTER__") == 0) {
     n = xmalloc(sizeof(Token));
     *n = *t;
@@ -295,32 +330,17 @@ static Token *builtin_macro(Token *t) {
     n->val = counter++;
     return n;
   }
-  if (strcmp(t->name, "__STDC__") == 0) {
+  if (strcmp(t->name, "__STDC__") == 0 || strcmp(t->name, "__STDC_VERSION__") == 0
+      || strcmp(t->name, "__GNUC__") == 0 || strcmp(t->name, "__GNUC_MINOR__") == 0
+      || strcmp(t->name, "__GNUC_PATCHLEVEL__") == 0
+      || strcmp(t->name, "__GNUC_STDC_INLINE__") == 0
+      || strcmp(t->name, "__x86_64__") == 0 || strcmp(t->name, "__amd64__") == 0
+      || strcmp(t->name, "__amd64") == 0 || strcmp(t->name, "__linux__") == 0
+      || strcmp(t->name, "__linux") == 0) {
     n = xmalloc(sizeof(Token));
     *n = *t;
     n->kind = TK_NUM;
-    n->val = 1;
-    return n;
-  }
-  if (strcmp(t->name, "__STDC_VERSION__") == 0) {
-    n = xmalloc(sizeof(Token));
-    *n = *t;
-    n->kind = TK_NUM;
-    n->val = 199901;
-    return n;
-  }
-  if (strcmp(t->name, "__x86_64__") == 0) {
-    n = xmalloc(sizeof(Token));
-    *n = *t;
-    n->kind = TK_NUM;
-    n->val = 1;
-    return n;
-  }
-  if (strcmp(t->name, "__linux__") == 0) {
-    n = xmalloc(sizeof(Token));
-    *n = *t;
-    n->kind = TK_NUM;
-    n->val = 1;
+    n->val = builtin_value(t->name, t->line);
     return n;
   }
   return NULL;
@@ -331,8 +351,41 @@ static Token *builtin_macro(Token *t) {
 static int builtin_name(char *s) {
   return strcmp(s, "__LINE__") == 0 || strcmp(s, "__FILE__") == 0 ||
          strcmp(s, "__COUNTER__") == 0 || strcmp(s, "__STDC__") == 0 ||
-         strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__x86_64__") == 0 ||
-         strcmp(s, "__linux__") == 0;
+         strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__GNUC__") == 0 ||
+         strcmp(s, "__GNUC_MINOR__") == 0 || strcmp(s, "__GNUC_PATCHLEVEL__") == 0 ||
+         strcmp(s, "__GNUC_STDC_INLINE__") == 0 || strcmp(s, "__VERSION__") == 0 ||
+         strcmp(s, "__x86_64__") == 0 || strcmp(s, "__amd64__") == 0 ||
+         strcmp(s, "__amd64") == 0 || strcmp(s, "__linux__") == 0 ||
+         strcmp(s, "__linux") == 0;
+}
+
+/* the value of a builtin macro in a #if expression: STDC_VERSION stays
+ * at 199901, the C99 floor this compiler targets, even though the gcc
+ * version claimed above is newer; string builtins (__FILE__,
+ * __VERSION__) have no numeric value and evaluate to 0 */
+static long builtin_value(char *s, int line) {
+  if (strcmp(s, "__STDC__") == 0)
+    return 1;
+  if (strcmp(s, "__STDC_VERSION__") == 0)
+    return 199901;
+  if (strcmp(s, "__LINE__") == 0)
+    return line;
+  if (strcmp(s, "__COUNTER__") == 0)
+    return counter++;
+  if (strcmp(s, "__GNUC__") == 0)
+    return SELF_GNUC_MAJOR;
+  if (strcmp(s, "__GNUC_MINOR__") == 0)
+    return SELF_GNUC_MINOR;
+  if (strcmp(s, "__GNUC_PATCHLEVEL__") == 0)
+    return SELF_GNUC_PATCH;
+  if (strcmp(s, "__GNUC_STDC_INLINE__") == 0)
+    return 1;
+  if (strcmp(s, "__x86_64__") == 0 || strcmp(s, "__amd64__") == 0 ||
+      strcmp(s, "__amd64") == 0)
+    return 1;
+  if (strcmp(s, "__linux__") == 0 || strcmp(s, "__linux") == 0)
+    return 1;
+  return 0;
 }
 
 /* -------- #if expression evaluator --------
@@ -454,15 +507,7 @@ static long eval_primary(Token **pp) {
     }
     /* a builtin macro's value */
     if (builtin_name(t->name)) {
-      long bv = 0;
-      if (strcmp(t->name, "__STDC__") == 0)
-        bv = 1;
-      else if (strcmp(t->name, "__STDC_VERSION__") == 0)
-        bv = 199901;
-      else if (strcmp(t->name, "__LINE__") == 0)
-        bv = t->line;
-      else if (strcmp(t->name, "__COUNTER__") == 0)
-        bv = counter++;
+      long bv = builtin_value(t->name, t->line);
       *pp = t->next;
       return bv;
     }
