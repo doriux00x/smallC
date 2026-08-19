@@ -227,6 +227,36 @@ int main(void) {
   /* the _Pragma("once") operator form, which gcc also honors */
   check += (once_pragma_hits == 3);
 
+  /* the gcc feature-detection operators: __has_attribute and
+   * __has_builtin answer 1 for what the compiler really implements */
+#if __has_attribute(packed) && __has_attribute(__aligned__) && __has_attribute(noreturn)
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if defined __has_attribute && defined __has_builtin && defined __has_include
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if __has_builtin(__builtin_offsetof) && __has_builtin(__builtin_expect) && \
+    __has_builtin(__builtin_constant_p) && __has_builtin(__builtin_types_compatible_p) && \
+    __has_builtin(__builtin_unreachable)
+  check += 1;
+#else
+  check += 1000;
+#endif
+#if __has_attribute(no_such_attribute_xyz)
+  check += 1000;
+#else
+  check += 1;
+#endif
+#if __has_builtin(__builtin_memcpy_xyz)
+  check += 1000;
+#else
+  check += 1;
+#endif
+
   /* stringize: #x is the argument's spelling as a string */
 #define STR(x) #x
   check += (strcmp(STR(hello), "hello") == 0);
@@ -423,7 +453,7 @@ o";
   check += 1000;
 #endif
 
-  if (check != 113)
+  if (check != 118)
     return check;
   printf("runpreproc ok\n");
   return 0;

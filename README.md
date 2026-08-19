@@ -70,7 +70,12 @@ toolchain doing its usual job.
   `-I` dirs; the `<...>` form only searches the `-I` dirs. `#if` /
   `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif` evaluate
   constant integer expressions with `defined()`, `__has_include`,
-  and constants that are single-token macros. `#line N ["file"]`
+  `__has_attribute(name)` and `__has_builtin(name)` — the latter two
+  answer 1 only for what the compiler really implements (the
+  `packed`/`aligned`/`noreturn` attributes, the fold-at-parse
+  builtins), and all three count as defined for `#ifdef`/`defined()`
+  the way gcc reports them, and constants that are single-token
+  macros. `#line N ["file"]`
   renumbers the file like gcc does, and `_Pragma` pipes through to
   the skipped-pragma path. `#pragma once` (and its `_Pragma("once")`
   form) compiles a file once per translation unit: the file is

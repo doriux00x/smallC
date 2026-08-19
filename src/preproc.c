@@ -11,6 +11,7 @@
  * #include ("..." resolves against the including file's directory and
  * the -I dirs, "<...>" against the -I dirs only), #ifdef/#ifndef/#if
  * (constant integer expressions, the defined operator, __has_include,
+ * __has_attribute, __has_builtin,
  * and constants that are single-token macros), #elif, #else, #endif,
  * #line N ["file"], #pragma once (directive and _Pragma("once") forms,
  * keyed on the canonicalized path so any re-include spelling is
@@ -388,16 +389,18 @@ static Token *builtin_macro(Token *t) {
 }
 
 /* the dynamic macros count as defined for #ifdef/#ifndef/defined(),
- * even though they live outside the macro table */
+ * even though they live outside the macro table; the feature-detection
+ * operators count too, as gcc reports them */
 static int builtin_name(char *s) {
   return strcmp(s, "__LINE__") == 0 || strcmp(s, "__FILE__") == 0 ||
          strcmp(s, "__COUNTER__") == 0 || strcmp(s, "__STDC__") == 0 ||
          strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__GNUC__") == 0 ||
          strcmp(s, "__GNUC_MINOR__") == 0 || strcmp(s, "__GNUC_PATCHLEVEL__") == 0 ||
          strcmp(s, "__GNUC_STDC_INLINE__") == 0 || strcmp(s, "__VERSION__") == 0 ||
-         strcmp(s, "__x86_64__") == 0 || strcmp(s, "__amd64__") == 0 ||
-         strcmp(s, "__amd64") == 0 || strcmp(s, "__linux__") == 0 ||
-         strcmp(s, "__linux") == 0;
+         strcmp(s, "__has_include") == 0 || strcmp(s, "__has_attribute") == 0 ||
+         strcmp(s, "__has_builtin") == 0 || strcmp(s, "__x86_64__") == 0 ||
+         strcmp(s, "__amd64__") == 0 || strcmp(s, "__amd64") == 0 ||
+         strcmp(s, "__linux__") == 0 || strcmp(s, "__linux") == 0;
 }
 
 /* the value of a builtin macro in a #if expression: STDC_VERSION stays
@@ -527,6 +530,40 @@ static long eval_primary(Token **pp) {
         error_at(t->loc, "expected \"FILENAME\" or <FILENAME> in __has_include");
       long v = find_include(inc, angled, has_srcpath) != NULL;
       *pp = close->next;
+      return v;
+    }
+    if (strcmp(t->name, "__has_attribute") == 0 ||
+        strcmp(t->name, "__has_builtin") == 0) {
+      /* gcc's feature-detection operators: __has_attribute(name)
+       * and __has_builtin(name) answer 1 only for what this
+       * compiler really implements - the attributes the parser
+       * gives semantics to (packed, aligned, noreturn) and the
+       * builtins that fold at parse time. the operand is a single
+       * identifier, exactly like gcc, with no macro expansion. the
+       * answer is deliberately narrower than gcc's: a header that
+       * conditionally uses __attribute__((unused)) must not take
+       * that branch here */
+      Token *n = t->next;
+      if (!is_punct(n, '('))
+        error_at(n->loc, "expected '(' after %s", t->name);
+      Token *name = n->next;
+      if (!(name->kind == TK_IDENT && is_punct(name->next, ')')))
+        error_at(t->loc, "expected a single identifier in %s", t->name);
+      int v = 0;
+      if (strcmp(t->name, "__has_attribute") == 0)
+        v = strcmp(name->name, "packed") == 0 ||
+            strcmp(name->name, "__packed__") == 0 ||
+            strcmp(name->name, "aligned") == 0 ||
+            strcmp(name->name, "__aligned__") == 0 ||
+            strcmp(name->name, "noreturn") == 0 ||
+            strcmp(name->name, "__noreturn__") == 0;
+      else
+        v = strcmp(name->name, "__builtin_offsetof") == 0 ||
+            strcmp(name->name, "__builtin_expect") == 0 ||
+            strcmp(name->name, "__builtin_unreachable") == 0 ||
+            strcmp(name->name, "__builtin_constant_p") == 0 ||
+            strcmp(name->name, "__builtin_types_compatible_p") == 0;
+      *pp = name->next->next;
       return v;
     }
     /* a single-token integer macro (or a one-hop alias to one) */
