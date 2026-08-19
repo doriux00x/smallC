@@ -65,7 +65,13 @@ toolchain doing its usual job.
   (including zero-parameter macros and empty macro arguments),
   variadic macros with `...`/`__VA_ARGS__`, the GNU comma-swallow
   form `, ## __VA_ARGS__`, the GNU named form (`args...`), and the
-  C23 `__VA_OPT__(...)` conditional part. `#include` in `"..."` form
+  C23 `__VA_OPT__(...)` conditional part. The command line takes
+  `-D NAME[=VALUE]` and `-U NAME` like gcc: the name is the leading
+  identifier run and the rest (with or without the `=`) is the
+  replacement list, tokenized like a `#define` body; `-U` and
+  `#undef` can even revoke a predefined macro, and the macro table
+  survives across input files, so the flags apply to every file
+  compiled afterwards. `#include` in `"..."` form
   resolves against the including file's directory first and then the
   `-I` dirs; the `<...>` form only searches the `-I` dirs. `#if` /
   `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif` evaluate

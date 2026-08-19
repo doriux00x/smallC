@@ -43,7 +43,11 @@ test: $(BIN)
 	@echo "== multi-file =="; \
 	./$(BIN) tests/runmulti1.c tests/runmulti2.c; \
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runmulti $(OBJDIR)/runmulti1.s $(OBJDIR)/runmulti2.s; \
-	./$(OBJDIR)/runmulti
+	./$(OBJDIR)/runmulti; \
+	@echo "== rundef =="; \
+	./$(BIN) -D FLAG=7 -D OTHER -U __linux__ tests/rundef.c; \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/rundef $(OBJDIR)/rundef.s; \
+	./$(OBJDIR)/rundef
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3

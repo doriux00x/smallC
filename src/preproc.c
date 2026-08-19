@@ -19,7 +19,10 @@
  * macros __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
  * the gcc identification set __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__,
  * __GNUC_STDC_INLINE__, __VERSION__, and the platform macros
- * __x86_64__/__amd64(__) and __linux__(__).
+ * __x86_64__/__amd64(__) and __linux__(__). -D NAME[=VALUE] and
+ * -U NAME act like gcc's: the table is never reset, so their state
+ * applies to every file compiled afterwards, and -U (or #undef) can
+ * revoke a predefined macro.
  *
  * it works on the token stream the lexer produces and splices the
  * expanded tokens back into one flat chain for the parser. macro
@@ -147,6 +150,20 @@ struct Macro {
 };
 
 static Macro *macros;
+
+/* names whose predefined meaning was revoked by -U or #undef: every
+ * builtin lookup consults this list, so such a name behaves as if
+ * gcc never predefined it (gcc lets -U and #undef kill __linux__,
+ * __GNUC__ and friends) */
+static char **undef_names;
+static int undef_n;
+
+static int is_undef(char *s) {
+  for (int i = 0; i < undef_n; i++)
+    if (strcmp(undef_names[i], s) == 0)
+      return 1;
+  return 0;
+}
 
 static Macro *find_macro(char *name) {
   for (Macro *m = macros; m; m = m->next)
@@ -341,6 +358,8 @@ static int counter;
 static long builtin_value(char *s, int line);
 
 static Token *builtin_macro(Token *t) {
+  if (is_undef(t->name))
+    return NULL;
   Token *n = NULL;
   if (strcmp(t->name, "__LINE__") == 0) {
     n = xmalloc(sizeof(Token));
@@ -392,6 +411,8 @@ static Token *builtin_macro(Token *t) {
  * even though they live outside the macro table; the feature-detection
  * operators count too, as gcc reports them */
 static int builtin_name(char *s) {
+  if (is_undef(s))
+    return 0;
   return strcmp(s, "__LINE__") == 0 || strcmp(s, "__FILE__") == 0 ||
          strcmp(s, "__COUNTER__") == 0 || strcmp(s, "__STDC__") == 0 ||
          strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__GNUC__") == 0 ||
@@ -440,6 +461,59 @@ static long builtin_value(char *s, int line) {
  * dictates for undefined identifiers in #if. */
 
 static long eval_lor(Token **pp);
+
+static void validate_body(Macro *m, Token *start, Token *end, int in_vaopt);
+
+/* -------- command-line macros: -D NAME[=VALUE], -U NAME -------- */
+
+void define_macro_cli(char *def) {
+  /* -D NAME[=VALUE]: the name is the whole leading run of identifier
+   * characters, and everything after it - with or without the '=' -
+   * is the replacement list, tokenized like a #define body; the
+   * empty list is fine. gcc accepts both -DNAME and "-D NAME" */
+  char *p = def;
+  if (!(*p == '_' || isalpha((unsigned char)*p)))
+    error("invalid macro name '%s' in -D", def);
+  int len = 1;
+  while (p[len] == '_' || isalnum((unsigned char)p[len]))
+    len++;
+  char *name = xstrndup(p, len);
+  char *value = p + len;
+  if (*value == '=')
+    value++;
+  Macro *m = find_macro(name);
+  if (!m) {
+    m = xmalloc(sizeof(Macro));
+    m->name = name;
+    m->next = macros;
+    macros = m;
+  }
+  m->nparams = 0;
+  m->params = NULL;
+  m->is_func = 0;
+  m->is_varargs = 0;
+  Token *body = tokenize(value);
+  m->body = body;
+  m->body_end = body;
+  while (m->body_end->kind != TK_EOF)
+    m->body_end = m->body_end->next;
+  validate_body(m, m->body, m->body_end, 0);
+}
+
+void undef_macro_cli(char *name) {
+  /* -U NAME or #undef NAME: a real macro is unlinked; a predefined
+   * one joins the revoke list, so the builtin lookups skip it */
+  Macro **link = &macros;
+  for (; *link; link = &(*link)->next)
+    if (strcmp((*link)->name, name) == 0) {
+      *link = (*link)->next;
+      return;
+    }
+  if (builtin_name(name) && !is_undef(name)) {
+    undef_names = xrealloc(undef_names, sizeof(char *) * (undef_n + 1));
+    undef_names[undef_n++] = xstrdup(name);
+  }
+}
 
 /* the including file's path, for __has_include's "..." form, which
  * resolves against it exactly like #include does */
@@ -1342,14 +1416,8 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
 
   if (directive_is(name, "undef")) {
     Token *n = name->next;
-    if (n->kind == TK_IDENT) {
-      Macro **link = &macros;
-      for (; *link; link = &(*link)->next)
-        if (strcmp((*link)->name, n->name) == 0) {
-          *link = (*link)->next;
-          break;
-        }
-    }
+    if (n->kind == TK_IDENT)
+      undef_macro_cli(n->name);
     *pp = skip_line(&n->next);
     return;
   }

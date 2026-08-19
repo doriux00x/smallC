@@ -211,6 +211,14 @@ int main(void) {
 #endif
   check += (sizeof(__VERSION__) > 1);
 
+  /* #undef of a predefined macro revokes it, like gcc's -U */
+#undef __GNUC__
+#ifdef __GNUC__
+  check += 1000;
+#else
+  check += 1;
+#endif
+
   /* #pragma once: once.h has no include guard and an initialized
    * global, so a second pass would be a redefinition; it is reached
    * three times (directly, through an alternate spelling that only
@@ -453,7 +461,7 @@ o";
   check += 1000;
 #endif
 
-  if (check != 118)
+  if (check != 119)
     return check;
   printf("runpreproc ok\n");
   return 0;

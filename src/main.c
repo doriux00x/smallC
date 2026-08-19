@@ -365,7 +365,8 @@ static void dump_stmt(Node *n, int d) {
 
 static void usage(void) {
   fprintf(stderr, "usage: smallcc [-a|-t] <file.c>\n");
-  fprintf(stderr, "       smallcc [-I dir]... <file.c>...   each compiles to build/<base>.s\n");
+  fprintf(stderr, "       smallcc [-I dir]... [-D NAME[=VALUE]]... [-U NAME]... <file.c>...\n");
+  fprintf(stderr, "       each compiles to build/<base>.s\n");
   exit(1);
 }
 
@@ -417,6 +418,14 @@ int main(int argc, char **argv) {
         if (!*dir && i + 1 < argc)
           dir = argv[++i];
         add_include_dir(dir);
+      } else if (strncmp(argv[i], "-D", 2) == 0 && argv[i][2]) {
+        define_macro_cli(argv[i] + 2);
+      } else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) {
+        define_macro_cli(argv[++i]);
+      } else if (strncmp(argv[i], "-U", 2) == 0 && argv[i][2]) {
+        undef_macro_cli(argv[i] + 2);
+      } else if (strcmp(argv[i], "-U") == 0 && i + 1 < argc) {
+        undef_macro_cli(argv[++i]);
       } else {
         compile_file(argv[i]);
       }
