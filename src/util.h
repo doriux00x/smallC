@@ -14,6 +14,7 @@ char *xstrdup(char *s);
 
 void error(char *fmt, ...) __attribute__((noreturn));
 void error_at(char *loc, char *fmt, ...) __attribute__((noreturn));
+int col_at(char *loc);
 
 char *read_file(char *path);
 

@@ -1534,6 +1534,34 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     error_at(t->loc, "#error %s", buf);
   }
 
+  if (directive_is(name, "warning")) {
+    /* #warning msg: like gcc, a warning to stderr and the compile
+     * goes on. the line is formatted as gcc formats it - path:line:
+     * col: warning: #warning msg [-Wcpp] - so the Makefile can diff
+     * smallcc's stderr against gcc's on the same file and they must
+     * match byte for byte. the message is the directive's tokens
+     * joined with single spaces, without the trailing one */
+    Token *n = name->next;
+    char *buf = xmalloc(64);
+    int msg_len = 0, cap = 64;
+    for (; n->kind != TK_EOF && !n->at_bol; n = n->next) {
+      if (msg_len + n->len + 2 > cap) {
+        cap = msg_len + n->len + 2;
+        buf = xrealloc(buf, cap);
+      }
+      memcpy(buf + msg_len, n->loc, n->len);
+      msg_len += n->len;
+      buf[msg_len++] = ' ';
+    }
+    if (msg_len)
+      msg_len--;
+    buf[msg_len] = '\0';
+    fprintf(stderr, "%s:%d:%d: warning: #warning %s [-Wcpp]\n",
+            srcpath, t->line, col_at(t->loc), buf);
+    *pp = skip_line(&name->next);
+    return;
+  }
+
   if (directive_is(name, "line")) {
     /* #line N ["file"]: the next source line becomes N, and the name
      * becomes "file" for __FILE__. every token that follows is

@@ -54,7 +54,16 @@ test: $(BIN)
 	diff $(OBJDIR)/rune.out $(OBJDIR)/rune.gcc && \
 	./$(BIN) $(OBJDIR)/rune.out && \
 	$(CC) $(CFLAGS) -o $(OBJDIR)/rune $(OBJDIR)/rune.s && \
-	./$(OBJDIR)/rune
+	./$(OBJDIR)/rune && \
+	echo "== runwarning ==" && \
+	./$(BIN) tests/runwarning.c 2>$(OBJDIR)/warn.out && \
+	grep -q '^tests/runwarning.c:6:3: warning: #warning "level two build" \[-Wcpp\]$$' $(OBJDIR)/warn.out && \
+	test $$(grep -c 'warning: #warning' $(OBJDIR)/warn.out) -eq 1 && \
+	gcc -fsyntax-only tests/runwarning.c 2>&1 | grep -o '#warning.*\[-Wcpp\]' | sort -u > $(OBJDIR)/warn.gcc && \
+	grep -o '#warning.*\[-Wcpp\]' $(OBJDIR)/warn.out | sort -u > $(OBJDIR)/warn.ours && \
+	diff $(OBJDIR)/warn.ours $(OBJDIR)/warn.gcc && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runwarning $(OBJDIR)/runwarning.s && \
+	./$(OBJDIR)/runwarning
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3

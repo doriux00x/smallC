@@ -84,7 +84,9 @@ toolchain doing its usual job.
   the way gcc reports them, and constants that are single-token
   macros. `#line N ["file"]`
   renumbers the file like gcc does, and `_Pragma` pipes through to
-  the skipped-pragma path. `#pragma once` (and its `_Pragma("once")`
+  the skipped-pragma path. `#warning msg` prints gcc's own line
+  format (`path:line:col: warning: #warning msg [-Wcpp]`) and keeps
+  compiling, and it stays silent inside a skipped branch. `#pragma once` (and its `_Pragma("once")`
   form) compiles a file once per translation unit: the file is
   registered under its canonicalized path, so a re-include through
   any spelling — `..` components, `./`, symlinks — is skipped, and

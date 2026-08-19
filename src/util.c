@@ -58,6 +58,22 @@ struct FileBuf {
 
 static FileBuf *filebufs;
 
+/* the 1-based column of loc in its source line, found the same way
+ * error_at finds the line: the token's own file buffer first, the
+ * main source as fallback */
+int col_at(char *loc) {
+  char *buf = g_src;
+  for (FileBuf *fb = filebufs; fb; fb = fb->next)
+    if (fb->buf <= loc && loc < fb->buf + fb->len) {
+      buf = fb->buf;
+      break;
+    }
+  char *p = loc;
+  while (p > buf && p[-1] != '\n')
+    p--;
+  return loc - p + 1;
+}
+
 // points at the offending token, prints the source line and a caret
 void error_at(char *loc, char *fmt, ...) {
   char *buf = NULL;
