@@ -91,7 +91,11 @@ toolchain doing its usual job.
   registered under its canonicalized path, so a re-include through
   any spelling — `..` components, `./`, symlinks — is skipped, and
   `__has_include` still reports it. The always-on macros are `__LINE__`,
-  `__FILE__`, `__COUNTER__`, `__STDC__`, `__STDC_VERSION__`, the gcc
+  `__FILE__`, `__COUNTER__`, `__DATE__` and `__TIME__` (frozen when a
+  translation unit starts preprocessing, with gcc's exact formats -
+  the Makefile greps the stamped date out of an -E run and compares
+  it with `date`), `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__`,
+  the gcc
   identification set `__GNUC__`/`__GNUC_MINOR__`/`__GNUC_PATCHLEVEL__`/
   `__GNUC_STDC_INLINE__`/`__VERSION__` (mirrored from the gcc that
   builds smallcc, so glibc's `__GNUC_PREREQ` gates are satisfied), and

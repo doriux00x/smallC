@@ -63,7 +63,16 @@ test: $(BIN)
 	grep -o '#warning.*\[-Wcpp\]' $(OBJDIR)/warn.out | sort -u > $(OBJDIR)/warn.ours && \
 	diff $(OBJDIR)/warn.ours $(OBJDIR)/warn.gcc && \
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runwarning $(OBJDIR)/runwarning.s && \
-	./$(OBJDIR)/runwarning
+	./$(OBJDIR)/runwarning && \
+	echo "== rundaytime ==" && \
+	./$(BIN) tests/rundaytime.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/rundaytime $(OBJDIR)/rundaytime.s && \
+	./$(OBJDIR)/rundaytime && \
+	./$(BIN) -E tests/rundaytime.c > $(OBJDIR)/daytime.out && \
+	nowdate="$$(date +'%b %e %Y')" && \
+	nowtime="$$(date +'%H:%M:%S')" && \
+	grep -q "build_date = \"$$nowdate\";" $(OBJDIR)/daytime.out && \
+	grep -q "build_time = \"$$nowtime\";" $(OBJDIR)/daytime.out
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3

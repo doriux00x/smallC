@@ -66,4 +66,18 @@ int fputc(int c, FILE *f);
 
 int mkdir(char *path, int mode);
 
+/* the build-time stamp for __DATE__ and __TIME__: broken-down local
+ * time, the same fields gcc's preprocessor reads (time_t is long on
+ * this platform) */
+struct tm {
+  int tm_sec;
+  int tm_min;
+  int tm_hour;
+  int tm_mday;
+  int tm_mon;
+  int tm_year;
+};
+long time(long *timer);
+struct tm *localtime(const long *timer);
+
 #endif

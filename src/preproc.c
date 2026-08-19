@@ -360,6 +360,27 @@ static int counter;
 
 static long builtin_value(char *s, int line);
 
+/* __DATE__ and __TIME__ freeze when the translation unit starts
+ * preprocessing, exactly as gcc freezes them when cpp starts up: a
+ * file keeps its stamp even across a long -E or compile, and each
+ * file in a multi-file run gets its own (as gcc gives each TU its
+ * own). the values are stored without quotes, like __FILE__'s */
+static char *stamp_date, *stamp_time;
+
+static void stamp_now(void) {
+  static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  long now = time(NULL);
+  struct tm *t = localtime(&now);
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%s %2d %d", months[t->tm_mon],
+           t->tm_mday, t->tm_year + 1900);
+  stamp_date = xstrdup(buf);
+  snprintf(buf, sizeof(buf), "%02d:%02d:%02d",
+           t->tm_hour, t->tm_min, t->tm_sec);
+  stamp_time = xstrdup(buf);
+}
+
 /* the -E rendering of a synthesized token. builtin macros evaluate
  * to tokens whose source bytes say nothing about the value, and
  * stringize drops the quotes, so the preprocessed output prints
@@ -391,6 +412,24 @@ static Token *builtin_macro(Token *t) {
     n->synth = render_num(n->val);
     return n;
   }
+  if (strcmp(t->name, "__DATE__") == 0) {
+    n = xmalloc(sizeof(Token));
+    *n = *t;
+    n->kind = TK_STR;
+    n->str = stamp_date;
+    n->str_len = strlen(stamp_date);
+    n->synth = render_quoted(n->str, n->str_len);
+    return n;
+  }
+  if (strcmp(t->name, "__TIME__") == 0) {
+    n = xmalloc(sizeof(Token));
+    *n = *t;
+    n->kind = TK_STR;
+    n->str = stamp_time;
+    n->str_len = strlen(stamp_time);
+    n->synth = render_quoted(n->str, n->str_len);
+    return n;
+  }
   if (strcmp(t->name, "__FILE__") == 0) {
     n = xmalloc(sizeof(Token));
     *n = *t;
@@ -418,6 +457,7 @@ static Token *builtin_macro(Token *t) {
     return n;
   }
   if (strcmp(t->name, "__STDC__") == 0 || strcmp(t->name, "__STDC_VERSION__") == 0
+      || strcmp(t->name, "__STDC_HOSTED__") == 0
       || strcmp(t->name, "__GNUC__") == 0 || strcmp(t->name, "__GNUC_MINOR__") == 0
       || strcmp(t->name, "__GNUC_PATCHLEVEL__") == 0
       || strcmp(t->name, "__GNUC_STDC_INLINE__") == 0
@@ -442,7 +482,9 @@ static int builtin_name(char *s) {
     return 0;
   return strcmp(s, "__LINE__") == 0 || strcmp(s, "__FILE__") == 0 ||
          strcmp(s, "__COUNTER__") == 0 || strcmp(s, "__STDC__") == 0 ||
-         strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__GNUC__") == 0 ||
+         strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__STDC_HOSTED__") == 0 ||
+         strcmp(s, "__DATE__") == 0 || strcmp(s, "__TIME__") == 0 ||
+         strcmp(s, "__GNUC__") == 0 ||
          strcmp(s, "__GNUC_MINOR__") == 0 || strcmp(s, "__GNUC_PATCHLEVEL__") == 0 ||
          strcmp(s, "__GNUC_STDC_INLINE__") == 0 || strcmp(s, "__VERSION__") == 0 ||
          strcmp(s, "__has_include") == 0 || strcmp(s, "__has_attribute") == 0 ||
@@ -460,6 +502,8 @@ static long builtin_value(char *s, int line) {
     return 1;
   if (strcmp(s, "__STDC_VERSION__") == 0)
     return 199901;
+  if (strcmp(s, "__STDC_HOSTED__") == 0)
+    return 1;
   if (strcmp(s, "__LINE__") == 0)
     return line;
   if (strcmp(s, "__COUNTER__") == 0)
@@ -1646,6 +1690,7 @@ static void core_stream(Token *toks, Chain *out, char *srcpath, int depth,
 Token *preprocess(Token *toks, char *srcpath) {
   cur_file = srcpath;
   counter = 0;
+  stamp_now();
   Chain out;
   chain_init(&out);
   core_stream(toks, &out, srcpath, 0, 1);
