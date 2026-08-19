@@ -37,10 +37,15 @@ struct Token {
   int len;       /* byte length of token text */
   int line;      /* 1-based source line (for __LINE__ and errors) */
   int at_bol;    /* first token on its line (directive detection) */
+  int indent;    /* leading spaces at that line start; -1 when a tab,
+                    so -E can reproduce gcc's leading whitespace */
   int space;     /* whitespace or comment before this token */
   char *name;    /* allocated copy, TK_IDENT only */
   char *str;     /* decoded string, TK_STR only */
   int str_len;
+  char *synth;   /* -E rendering: the text a synthesized token prints
+                  * (builtin macro values, stringized arguments), when
+                  * its source bytes say nothing about the value */
 };
 
 Token *tokenize(char *p);

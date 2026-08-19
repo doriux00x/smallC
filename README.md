@@ -71,7 +71,8 @@ toolchain doing its usual job.
   replacement list, tokenized like a `#define` body; `-U` and
   `#undef` can even revoke a predefined macro, and the macro table
   survives across input files, so the flags apply to every file
-  compiled afterwards. `#include` in `"..."` form
+  compiled afterwards. `-E` runs the preprocessor alone, printing
+  the result to stdout. `#include` in `"..."` form
   resolves against the including file's directory first and then the
   `-I` dirs; the `<...>` form only searches the `-I` dirs. `#if` /
   `#ifdef` / `#ifndef` / `#elif` / `#else` / `#endif` evaluate
@@ -230,6 +231,13 @@ Two debug flags, mostly for developing the compiler itself:
 
     ./smallcc -a tests/switch.c   # dump the AST
     ./smallcc -t tests/lexer.c    # dump the token stream
+
+`-E` prints the preprocessed translation unit to stdout (no assembly,
+no `#` markers), matching `gcc -E -P` byte for byte on its own test
+files - the Makefile `test` target diffs the two and then recompiles
+the printed text, so an -E regression is a failed diff:
+
+    ./smallcc -E -D FLAG=9 tests/rune.c
 
 One translation unit is read, tokenized, preprocessed, parsed,
 resolved, and code-generated; every stage rewinds its own state, so

@@ -291,6 +291,7 @@ static Token *vaopt_close(Token *open, Token *end) {
  * value is the spelling itself, since escaping and unescaping cancel
  * out, with each run of whitespace between the argument's tokens
  * becoming a single space (6.10.3.2) */
+static char *render_quoted(char *s, int n);
 static Token *stringize_token(Token *arg, Token *end, Token *at) {
   int cap = 64, n = 0;
   char *buf = xmalloc(cap);
@@ -317,6 +318,7 @@ static Token *stringize_token(Token *arg, Token *end, Token *at) {
   st->str = buf;
   st->str_len = n;
   st->name = NULL;
+  st->synth = render_quoted(buf, n);
   return st;
 }
 
@@ -334,6 +336,7 @@ static Token *paste_tokens(Token *a, Token *b) {
   nt->line = a->line;
   nt->at_bol = a->at_bol;
   nt->space = a->space;
+  nt->indent = a->indent;
   return nt;
 }
 
@@ -357,6 +360,25 @@ static int counter;
 
 static long builtin_value(char *s, int line);
 
+/* the -E rendering of a synthesized token. builtin macros evaluate
+ * to tokens whose source bytes say nothing about the value, and
+ * stringize drops the quotes, so the preprocessed output prints
+ * from the synth field when it is set */
+static char *render_num(long v) {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%ld", v);
+  return xstrdup(buf);
+}
+
+static char *render_quoted(char *s, int n) {
+  char *q = xmalloc(n + 3);
+  q[0] = '"';
+  memcpy(q + 1, s, n);
+  q[n + 1] = '"';
+  q[n + 2] = '\0';
+  return q;
+}
+
 static Token *builtin_macro(Token *t) {
   if (is_undef(t->name))
     return NULL;
@@ -366,6 +388,7 @@ static Token *builtin_macro(Token *t) {
     *n = *t;
     n->kind = TK_NUM;
     n->val = t->line;
+    n->synth = render_num(n->val);
     return n;
   }
   if (strcmp(t->name, "__FILE__") == 0) {
@@ -374,6 +397,7 @@ static Token *builtin_macro(Token *t) {
     n->kind = TK_STR;
     n->str = xstrdup(line_file ? line_file : cur_file);
     n->str_len = strlen(n->str);
+    n->synth = render_quoted(n->str, n->str_len);
     return n;
   }
   if (strcmp(t->name, "__VERSION__") == 0) {
@@ -382,6 +406,7 @@ static Token *builtin_macro(Token *t) {
     n->kind = TK_STR;
     n->str = xstrdup(SELF_GNUC_VERSION);
     n->str_len = strlen(n->str);
+    n->synth = render_quoted(n->str, n->str_len);
     return n;
   }
   if (strcmp(t->name, "__COUNTER__") == 0) {
@@ -389,6 +414,7 @@ static Token *builtin_macro(Token *t) {
     *n = *t;
     n->kind = TK_NUM;
     n->val = counter++;
+    n->synth = render_num(n->val);
     return n;
   }
   if (strcmp(t->name, "__STDC__") == 0 || strcmp(t->name, "__STDC_VERSION__") == 0
@@ -402,6 +428,7 @@ static Token *builtin_macro(Token *t) {
     *n = *t;
     n->kind = TK_NUM;
     n->val = builtin_value(t->name, t->line);
+    n->synth = render_num(n->val);
     return n;
   }
   return NULL;
@@ -1026,14 +1053,24 @@ static void subst_body_range(Macro *m, Token **args, Token **ends,
       continue;
     }
 
-    /* a parameter -> its argument, expanded at first use */
+    /* a parameter -> its argument, expanded at first use; the
+     * slice's first token takes the parameter's space flag, because
+     * the argument's own leading whitespace belongs to the caller's
+     * comma, not the replacement text ("S( 7 )" prints the 7 in the
+     * def's rhythm, dropping the caller's indent - like gcc) */
     if (b->kind == TK_IDENT && m->params) {
       int idx = param_index(m, b);
       if (idx >= 0) {
         if (!expanded[idx])
           expanded[idx] = expand_slice(args[idx], ends[idx], depth + 1);
-        for (Token *ct = copy_chain(expanded[idx]); ct; ct = ct->next)
-          tail = chain_append(out, ct);
+        Token *x0 = expanded[idx];
+        if (x0) {
+          Token *c0 = copy_token(x0);
+          c0->space = b->space;
+          tail = chain_append(out, c0);
+          for (Token *ct = x0->next; ct; ct = ct->next)
+            tail = chain_append(out, copy_token(ct));
+        }
         b = b->next;
         continue;
       }
@@ -1046,11 +1083,22 @@ static void subst_body_range(Macro *m, Token **args, Token **ends,
 }
 
 static void subst_body(Macro *m, Token **args, Token **ends,
-                       Token **expanded, Chain *out, int depth) {
+                       Token **expanded, Chain *out, int depth,
+                       int at_bol, int space, int indent) {
   Chain body;
   chain_init(&body);
   subst_body_range(m, args, ends, expanded, m->body, m->body_end, &body, depth);
   chain_end(&body);
+  /* the replacement text takes the invocation's place, so its first
+   * token inherits the invocation's at_bol, space and indent flags:
+   * the -E output keeps the call site's line structure ("M" on its
+   * own line stays on its own line) and its separation ("v = F;"
+   * prints "v = 9;", "v=F;" prints "v=9;") */
+  if (body.head) {
+    body.head->at_bol = at_bol;
+    body.head->space = space;
+    body.head->indent = indent;
+  }
   for (Token *x = body.head; x; )
     expand_unit(&x, out, depth + 1);
 }
@@ -1122,7 +1170,7 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
   if (!m->is_func) {
     *pp = t->next;
     painting[paint_n++] = m;
-    subst_body(m, NULL, NULL, NULL, out, depth + 1);
+    subst_body(m, NULL, NULL, NULL, out, depth + 1, t->at_bol, t->space, t->indent);
     paint_n--;
     return;
   }
@@ -1198,7 +1246,7 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
 
   /* substitute and rescan the body under the paint */
   painting[paint_n++] = m;
-  subst_body(m, args, ends, expanded, out, depth + 1);
+  subst_body(m, args, ends, expanded, out, depth + 1, t->at_bol, t->space, t->indent);
   paint_n--;
 }
 

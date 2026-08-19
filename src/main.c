@@ -364,9 +364,10 @@ static void dump_stmt(Node *n, int d) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: smallcc [-a|-t] <file.c>\n");
+  fprintf(stderr, "usage: smallcc [-a|-t|-E] <file.c>\n");
   fprintf(stderr, "       smallcc [-I dir]... [-D NAME[=VALUE]]... [-U NAME]... <file.c>...\n");
-  fprintf(stderr, "       each compiles to build/<base>.s\n");
+  fprintf(stderr, "       -E preprocesses to stdout (gcc's -E -P form: no # markers,\n");
+  fprintf(stderr, "         no comments); each other file compiles to build/<base>.s\n");
   exit(1);
 }
 
@@ -382,9 +383,8 @@ static char *out_base(char *path) {
   return out;
 }
 
-/* one translation unit, end to end. every stage resets its own
- * state (resolve rewinds the scope and label counter, codegen too),
- * so several files in one run are exactly several separate runs */
+/* every compiled or preprocessed file resets its own state, so
+ * several files in one run are exactly several separate runs */
 static void compile_file(char *path) {
   g_src = read_file(path);
   Token *toks = preprocess(tokenize(g_src), path);
@@ -395,8 +395,74 @@ static void compile_file(char *path) {
   codegen(root, outpath);
 }
 
+/* -E: the preprocessed chain back out as text. synthesized tokens
+ * (builtin macro values, stringized arguments) print from their
+ * synth field; everything else prints its source bytes, so the
+ * output round-trips through the compiler as a valid translation
+ * unit. line structure follows gcc -E -P: each line keeps its
+ * leading spaces (a tab line-start prints one space), and blank
+ * lines collapse */
+static void print_preprocessed(Token *t) {
+  int first = 1;
+  int just_nl = 0;
+  for (; t->kind != TK_EOF; t = t->next) {
+    if (t->at_bol) {
+      if (!first && !just_nl)
+        printf("\n");
+      if (t->indent < 0)
+        printf(" ");
+      else
+        for (int i = 0; i < t->indent; i++)
+          printf(" ");
+      just_nl = 1;
+    } else if (!first && t->space) {
+      printf(" ");
+    }
+    if (t->synth)
+      printf("%s", t->synth);
+    else
+      printf("%.*s", t->len, t->loc);
+    first = 0;
+    just_nl = 0;
+  }
+  printf("\n");
+}
+
+static void preproc_file(char *path) {
+  g_src = read_file(path);
+  Token *toks = preprocess(tokenize(g_src), path);
+  print_preprocessed(toks);
+}
+
+/* one -I/-D/-U option, shared by the compile and preprocess modes;
+ * the -D NAME[=VALUE] and -U NAME forms match the compile loop.
+ * returns 1 when argv[*i] was an option (having consumed argv[++*i]
+ * for the two-token form, or argv[*i] alone for the fused one) */
+static int take_cli_option(int argc, char **argv, int *i) {
+  char *a = argv[*i];
+  if (strncmp(a, "-I", 2) == 0) {
+    char *dir = a + 2;
+    if (!*dir && *i + 1 < argc)
+      dir = argv[++*i];
+    add_include_dir(dir);
+    return 1;
+  }
+  if (strncmp(a, "-D", 2) == 0 && (a[2] || *i + 1 < argc)) {
+    char *def = a[2] ? a + 2 : argv[++*i];
+    define_macro_cli(def);
+    return 1;
+  }
+  if (strncmp(a, "-U", 2) == 0 && (a[2] || *i + 1 < argc)) {
+    char *name = a[2] ? a + 2 : argv[++*i];
+    undef_macro_cli(name);
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
-  enum { MODE_COMPILE, MODE_DUMP_AST, MODE_DUMP_TOKENS } mode = MODE_COMPILE;
+  enum { MODE_COMPILE, MODE_DUMP_AST, MODE_DUMP_TOKENS, MODE_PREPROC } mode
+    = MODE_COMPILE;
   char *path;
 
   if (argc >= 3 && strcmp(argv[1], "-a") == 0) {
@@ -405,31 +471,37 @@ int main(int argc, char **argv) {
   } else if (argc >= 3 && strcmp(argv[1], "-t") == 0) {
     mode = MODE_DUMP_TOKENS;
     path = argv[2];
+  } else if (argc >= 2 && strcmp(argv[1], "-E") == 0) {
+    mode = MODE_PREPROC;
+    path = NULL;
   } else if (argc >= 2) {
     path = NULL;
   } else {
     usage();
   }
 
+
   if (mode == MODE_COMPILE) {
     for (int i = 1; i < argc; i++) {
-      if (strncmp(argv[i], "-I", 2) == 0) {
-        char *dir = argv[i] + 2;
-        if (!*dir && i + 1 < argc)
-          dir = argv[++i];
-        add_include_dir(dir);
-      } else if (strncmp(argv[i], "-D", 2) == 0 && argv[i][2]) {
-        define_macro_cli(argv[i] + 2);
-      } else if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) {
-        define_macro_cli(argv[++i]);
-      } else if (strncmp(argv[i], "-U", 2) == 0 && argv[i][2]) {
-        undef_macro_cli(argv[i] + 2);
-      } else if (strcmp(argv[i], "-U") == 0 && i + 1 < argc) {
-        undef_macro_cli(argv[++i]);
-      } else {
-        compile_file(argv[i]);
-      }
+      if (take_cli_option(argc, argv, &i))
+        continue;
+      compile_file(argv[i]);
     }
+    return 0;
+  }
+
+  if (mode == MODE_PREPROC) {
+    int nfiles = 0;
+    for (int i = 1; i < argc; i++) {
+      if (strncmp(argv[i], "-E", 2) == 0)
+        continue;
+      if (take_cli_option(argc, argv, &i))
+        continue;
+      preproc_file(argv[i]);
+      nfiles++;
+    }
+    if (!nfiles)
+      usage();
     return 0;
   }
 

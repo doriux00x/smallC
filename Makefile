@@ -44,10 +44,17 @@ test: $(BIN)
 	./$(BIN) tests/runmulti1.c tests/runmulti2.c; \
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runmulti $(OBJDIR)/runmulti1.s $(OBJDIR)/runmulti2.s; \
 	./$(OBJDIR)/runmulti; \
-	@echo "== rundef =="; \
+	echo "== rundef =="; \
 	./$(BIN) -D FLAG=7 -D OTHER -U __linux__ tests/rundef.c; \
 	$(CC) $(CFLAGS) -o $(OBJDIR)/rundef $(OBJDIR)/rundef.s; \
-	./$(OBJDIR)/rundef
+	./$(OBJDIR)/rundef; \
+	echo "== rune =="; \
+	./$(BIN) -E -D FLAG=9 tests/rune.c > $(OBJDIR)/rune.out && \
+	gcc -E -P -D FLAG=9 tests/rune.c > $(OBJDIR)/rune.gcc && \
+	diff $(OBJDIR)/rune.out $(OBJDIR)/rune.gcc && \
+	./$(BIN) $(OBJDIR)/rune.out && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/rune $(OBJDIR)/rune.s && \
+	./$(OBJDIR)/rune
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3

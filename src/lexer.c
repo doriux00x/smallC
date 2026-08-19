@@ -55,7 +55,7 @@ static char *puncts[] = {
 };
 
 static Token *tok_new(TokenKind kind, char *start, int len,
-                      int line, int at_bol, int space) {
+                      int line, int at_bol, int indent, int space) {
   Token *t = xmalloc(sizeof(Token));
   memset(t, 0, sizeof(Token));
   t->kind = kind;
@@ -63,6 +63,7 @@ static Token *tok_new(TokenKind kind, char *start, int len,
   t->len = len;
   t->line = line;
   t->at_bol = at_bol;
+  t->indent = indent;
   t->space = space;
   return t;
 }
@@ -151,9 +152,9 @@ static int is_float_lit(char *p) {
   return 0;
 }
 
-static Token *read_number(char *start, char **pp, int line, int at_bol, int space) {
+static Token *read_number(char *start, char **pp, int line, int at_bol, int indent, int space) {
   char *p = *pp;
-  Token *t = tok_new(TK_NUM, start, 0, line, at_bol, space);
+  Token *t = tok_new(TK_NUM, start, 0, line, at_bol, at_bol ? indent : 0, space);
   if (is_float_lit(p)) {
     /* FIXME: strtod silently gives inf on overflow */
     t->fval = strtod(p, &p);
@@ -237,7 +238,7 @@ static Token *read_number(char *start, char **pp, int line, int at_bol, int spac
 Token *tokenize(char *p) {
   Token head = {0};
   Token *cur = &head;
-  int line = 1, at_bol = 1, space = 0;
+  int line = 1, at_bol = 1, space = 0, indent = 0;
 
   while (*p) {
     /* backslash-newline splicing: the pair is deleted before
@@ -253,6 +254,12 @@ Token *tokenize(char *p) {
       if (*p == '\n') {
         line++;
         at_bol = 1;
+        indent = 0;
+      } else if (at_bol) {
+        if (*p == ' ')
+          indent = indent < 0 ? -1 : indent + 1;
+        else
+          indent = -1;   /* tab (etc.): printed as one space, like gcc */
       }
       space = 1;
       p++;
@@ -301,7 +308,7 @@ Token *tokenize(char *p) {
           break;
         }
 
-      Token *t = tok_new(kind, start, len, line, at_bol, space);
+      Token *t = tok_new(kind, start, len, line, at_bol, at_bol ? indent : 0, space);
       if (kind == TK_IDENT)
         t->name = xstrndup(start, len);
       cur = cur->next = t;
@@ -313,7 +320,7 @@ Token *tokenize(char *p) {
     if (isdigit((unsigned char)*p) ||
         (*p == '.' && isdigit((unsigned char)p[1]))) {
       char *start = p;
-      Token *t = read_number(start, &p, line, at_bol, space);
+      Token *t = read_number(start, &p, line, at_bol, indent, space);
       cur = cur->next = t;
       space = 0;
       at_bol = 0;
@@ -345,7 +352,7 @@ Token *tokenize(char *p) {
       }
       p++; /* closing quote */
 
-      Token *t = tok_new(TK_STR, start, p - start, line, at_bol, space);
+      Token *t = tok_new(TK_STR, start, p - start, line, at_bol, at_bol ? indent : 0, space);
       t->str = buf;
       t->str[n] = '\0';
       t->str_len = n;
@@ -375,7 +382,7 @@ Token *tokenize(char *p) {
         error_at(start, "multi-char constants not supported");
       p++;
 
-      Token *t = tok_new(TK_NUM, start, p - start, line, at_bol, space);
+      Token *t = tok_new(TK_NUM, start, p - start, line, at_bol, at_bol ? indent : 0, space);
       /* a char constant is the execution character interpreted as
        * (signed) char: '\xff' is -1 on x86-64, as gcc does */
       t->val = (int)(signed char)c;
@@ -389,7 +396,7 @@ Token *tokenize(char *p) {
     for (int i = 0; i < (int)ARRAY_LEN(puncts); i++) {
       int plen = (int)strlen(puncts[i]);
       if (strncmp(p, puncts[i], plen) == 0) {
-        cur = cur->next = tok_new(TK_PUNCT, p, plen, line, at_bol, space);
+        cur = cur->next = tok_new(TK_PUNCT, p, plen, line, at_bol, at_bol ? indent : 0, space);
         p += plen;
         matched = 1;
         break;
@@ -404,7 +411,7 @@ Token *tokenize(char *p) {
     error_at(p, "unexpected character '%c'", *p);
   }
 
-  cur->next = tok_new(TK_EOF, p, 0, line, 0, 0);
+  cur->next = tok_new(TK_EOF, p, 0, line, 0, 0, 0);
   return head.next;
 }
 
