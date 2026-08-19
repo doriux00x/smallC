@@ -57,6 +57,7 @@ int snprintf(char *buf, size_t n, const char *fmt, ...);
 int sprintf(char *buf, const char *fmt, ...);
 
 FILE *fopen(const char *path, const char *mode);
+char *realpath(const char *path, char *resolved);
 int fclose(FILE *f);
 size_t fread(void *p, size_t sz, size_t n, FILE *f);
 int fseek(FILE *f, long off, int whence);

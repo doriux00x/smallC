@@ -72,7 +72,11 @@ toolchain doing its usual job.
   constant integer expressions with `defined()`, `__has_include`,
   and constants that are single-token macros. `#line N ["file"]`
   renumbers the file like gcc does, and `_Pragma` pipes through to
-  the skipped-pragma path. The always-on macros are `__LINE__`,
+  the skipped-pragma path. `#pragma once` (and its `_Pragma("once")`
+  form) compiles a file once per translation unit: the file is
+  registered under its canonicalized path, so a re-include through
+  any spelling — `..` components, `./`, symlinks — is skipped, and
+  `__has_include` still reports it. The always-on macros are `__LINE__`,
   `__FILE__`, `__COUNTER__`, `__STDC__`, `__STDC_VERSION__`, the gcc
   identification set `__GNUC__`/`__GNUC_MINOR__`/`__GNUC_PATCHLEVEL__`/
   `__GNUC_STDC_INLINE__`/`__VERSION__` (mirrored from the gcc that

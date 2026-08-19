@@ -12,6 +12,11 @@
  * branches add 1000 so any mis-evaluated conditional blows the total. */
 
 #include "inc/preproc.h"
+#include "inc/once.h"
+#include "inc/./once.h"
+#include "inc/once_two.h"
+#include "inc/once_pragma.h"
+#include "inc/once_pragma.h"
 
 #define VERSION 3
 #define ZERO0() 0
@@ -205,6 +210,22 @@ int main(void) {
   check += 1000;
 #endif
   check += (sizeof(__VERSION__) > 1);
+
+  /* #pragma once: once.h has no include guard and an initialized
+   * global, so a second pass would be a redefinition; it is reached
+   * three times (directly, through an alternate spelling that only
+   * realpath can equate, and via once_two.h) and must compile once.
+   * __has_include is unaffected by the once state, matching gcc */
+  check += (once_hits == 41);
+  check += (ONCE_COMPILED == 1);
+#if __has_include("inc/once.h")
+  check += 1;
+#else
+  check += 1000;
+#endif
+
+  /* the _Pragma("once") operator form, which gcc also honors */
+  check += (once_pragma_hits == 3);
 
   /* stringize: #x is the argument's spelling as a string */
 #define STR(x) #x
@@ -402,7 +423,7 @@ o";
   check += 1000;
 #endif
 
-  if (check != 109)
+  if (check != 113)
     return check;
   printf("runpreproc ok\n");
   return 0;

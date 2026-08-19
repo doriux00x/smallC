@@ -12,7 +12,9 @@
  * the -I dirs, "<...>" against the -I dirs only), #ifdef/#ifndef/#if
  * (constant integer expressions, the defined operator, __has_include,
  * and constants that are single-token macros), #elif, #else, #endif,
- * #line N ["file"], and the dynamic
+ * #line N ["file"], #pragma once (directive and _Pragma("once") forms,
+ * keyed on the canonicalized path so any re-include spelling is
+ * caught), and the dynamic
  * macros __LINE__, __FILE__, __COUNTER__, __STDC__, __STDC_VERSION__,
  * the gcc identification set __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__,
  * __GNUC_STDC_INLINE__, __VERSION__, and the platform macros
@@ -57,6 +59,45 @@ static int incdir_n;
 void add_include_dir(char *dir) {
   incdirs = xrealloc(incdirs, sizeof(char *) * (incdir_n + 1));
   incdirs[incdir_n++] = dir;
+}
+
+/* -------- #pragma once -------- */
+
+static char **once_files;
+static int once_n;
+
+/* canonicalized path of a file, for #pragma once's identity: realpath
+ * resolves symlinks and "."/".." components, so an include that
+ * reaches the same file through a different spelling is caught;
+ * falls back to the raw path when resolution fails */
+static char *canon_path(char *path) {
+  char *rp = realpath(path, NULL);
+  return rp ? rp : xstrdup(path);
+}
+
+/* register the file being processed, from its #pragma once (either
+ * the directive or the _Pragma operator) */
+static void once_register(char *srcpath) {
+  char *canon = canon_path(srcpath);
+  for (int i = 0; i < once_n; i++)
+    if (strcmp(once_files[i], canon) == 0) {
+      free(canon);
+      return;
+    }
+  once_files = xrealloc(once_files, sizeof(char *) * (once_n + 1));
+  once_files[once_n++] = canon;
+}
+
+/* 1 when the resolved #include target has already been compiled once */
+static int once_skipped(char *found) {
+  char *canon = canon_path(found);
+  for (int i = 0; i < once_n; i++)
+    if (strcmp(once_files[i], canon) == 0) {
+      free(canon);
+      return 1;
+    }
+  free(canon);
+  return 0;
 }
 
 /* the include search, shared by #include and __has_include: the
@@ -940,6 +981,10 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
     Token *expanded = expand_slice(as, arg_end, depth + 1);
     if (!expanded || expanded->next || expanded->kind != TK_STR)
       error_at(t->loc, "expected a string literal in _Pragma");
+    /* _Pragma("once") is #pragma once in operator form; gcc honors
+     * both (the current file's identity is cur_file here) */
+    if (strcmp(expanded->str, "once") == 0)
+      once_register(cur_file);
     *pp = arg_end->next;
     return;
   }
@@ -1301,6 +1346,10 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
   if (!found) {
     error_at(t->loc, "cannot open include file '%s'", inc);
   }
+  if (once_skipped(found)) {
+    /* the target is under #pragma once and already compiled */
+    return;
+  }
 
     char *save_file = cur_file;
     char *save_line = line_file;
@@ -1360,6 +1409,13 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
   }
 
   if (directive_is(name, "pragma")) {
+    /* #pragma once: the file is compiled once per translation unit,
+     * so any later #include of it is skipped, no matter which path
+     * spelling reaches it. gcc honors the directive only when
+     * `once` is the whole line; any other pragma is skipped */
+    if (name->next->kind == TK_IDENT && strcmp(name->next->name, "once") == 0 &&
+        (name->next->next->kind == TK_EOF || name->next->next->at_bol))
+      once_register(srcpath);
     *pp = skip_line(&name->next);
     return;
   }
