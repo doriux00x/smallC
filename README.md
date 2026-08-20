@@ -79,7 +79,12 @@ toolchain doing its usual job.
   resolves against the including file's directory first and then the
   `-I` dirs; the `<...>` form only searches the `-I` dirs. The name
   is macro-expanded first, as gcc does, so
-  `#define HDR "x.h"` + `#include HDR` works. `#if` /
+  `#define HDR "x.h"` + `#include HDR` works. `#include_next` (gcc)
+  resumes the search one directory past the one that produced the
+  file being read: the including file's own directory and every -I
+  slot up to and including the current file's are skipped, so layered
+  header trees (`chain.h` in dir 1 handing over to `leaf.h` in dir 2)
+  can append to a shadowed header without recursing into it. `#if` /
   `#ifdef` / `#ifndef` / `#elif` / `#elifdef` / `#elifndef` / `#else` /
   `#endif` evaluate
   constant integer expressions with `defined()`, `__has_include`,

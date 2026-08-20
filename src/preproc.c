@@ -1547,7 +1547,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     return;
   }
 
-  if (directive_is(name, "include")) {
+  if (directive_is(name, "include") || directive_is(name, "include_next")) {
     /* the name is macro-expanded in place, as gcc does: the tokens
      * after #include may be a macro whose expansion is a "file" or
      * <file> spelling, so `#define HDR "x.h"` + `#include HDR`
@@ -1581,8 +1581,33 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
 
 /* "..." resolves against the including file's directory first,
    * "<...>" goes straight to the -I dirs; the same search backs
-   * #include and __has_include */
-  char *found = find_include(inc, angled, srcpath);
+   * #include and __has_include. #include_next picks up where the
+   * include the current file came from left off: it skips the
+   * current file's directory and every -I slot up to and including
+   * the one that produced the file being read, so a layered header
+   * can hand the search to the next directory in the chain */
+  char *found = NULL;
+  if (directive_is(name, "include_next")) {
+    char cand[512];
+    char *slash = strrchr(srcpath, '/');
+    int clen = slash ? (int)(slash - srcpath) : 0;
+    char *curdir = slash ? xstrndup(srcpath, clen) : NULL;
+    int i0 = -1;
+    if (curdir)
+      for (int i = 0; i < incdir_n; i++)
+        if (strcmp(incdirs[i], curdir) == 0)
+          i0 = i;
+    for (int i = i0 + 1; !found && i < incdir_n; i++) {
+      snprintf(cand, sizeof(cand), "%s/%s", incdirs[i], inc);
+      FILE *f = fopen(cand, "r");
+      if (f) {
+        fclose(f);
+        found = xstrndup(cand, strlen(cand));
+      }
+    }
+  } else {
+    found = find_include(inc, angled, srcpath);
+  }
   if (!found) {
     error_at(t->loc, "cannot open include file '%s'", inc);
   }

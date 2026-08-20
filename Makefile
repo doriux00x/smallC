@@ -99,7 +99,25 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runincl $(OBJDIR)/runincl.s && \
 	./$(OBJDIR)/runincl && \
 	gcc -Itests/inc -include inc1.h -o $(OBJDIR)/runincl.gcc tests/runincl.c && \
-	./$(OBJDIR)/runincl.gcc
+	./$(OBJDIR)/runincl.gcc && \
+	echo "== runinclnext ==" && \
+	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
+	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \
+	diff $(OBJDIR)/inclnext.out $(OBJDIR)/inclnext.gcc && \
+	./$(BIN) -Itests/inc -Itests/inc2 tests/runinclnext.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runinclnext $(OBJDIR)/runinclnext.s && \
+	./$(OBJDIR)/runinclnext && \
+	gcc -Itests/inc -Itests/inc2 -o $(OBJDIR)/runinclnext.gcc tests/runinclnext.c && \
+	./$(OBJDIR)/runinclnext.gcc && \
+	echo "== runinclnext ==" && \
+	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
+	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \
+	diff $(OBJDIR)/inclnext.out $(OBJDIR)/inclnext.gcc && \
+	./$(BIN) -Itests/inc -Itests/inc2 tests/runinclnext.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runinclnext $(OBJDIR)/runinclnext.s && \
+	./$(OBJDIR)/runinclnext && \
+	gcc -Itests/inc -Itests/inc2 -o $(OBJDIR)/runinclnext.gcc tests/runinclnext.c && \
+	./$(OBJDIR)/runinclnext.gcc
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3
