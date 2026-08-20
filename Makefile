@@ -90,7 +90,16 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runincline $(OBJDIR)/runincline.s && \
 	./$(OBJDIR)/runincline && \
 	gcc -o $(OBJDIR)/runincline.gcc tests/runincline.c && \
-	./$(OBJDIR)/runincline.gcc
+	./$(OBJDIR)/runincline.gcc && \
+	echo "== runincl ==" && \
+	./$(BIN) -E -Itests/inc -include inc1.h tests/runincl.c > $(OBJDIR)/incl.out && \
+	gcc -E -P -Itests/inc -include inc1.h tests/runincl.c > $(OBJDIR)/incl.gcc && \
+	diff $(OBJDIR)/incl.out $(OBJDIR)/incl.gcc && \
+	./$(BIN) -Itests/inc -include inc1.h tests/runincl.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runincl $(OBJDIR)/runincl.s && \
+	./$(OBJDIR)/runincl && \
+	gcc -Itests/inc -include inc1.h -o $(OBJDIR)/runincl.gcc tests/runincl.c && \
+	./$(OBJDIR)/runincl.gcc
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3

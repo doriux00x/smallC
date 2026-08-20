@@ -71,7 +71,10 @@ toolchain doing its usual job.
   replacement list, tokenized like a `#define` body; `-U` and
   `#undef` can even revoke a predefined macro, and the macro table
   survives across input files, so the flags apply to every file
-  compiled afterwards. `-E` runs the preprocessor alone, printing
+  compiled afterwards. `-include FILE` preprocesses `FILE` at the
+  very start of every translation unit, as if an `#include "FILE"`
+  led the source; it shares the macros and `#pragma once` registry
+  of the unit that follows it. `-E` runs the preprocessor alone, printing
   the result to stdout. `#include` in `"..."` form
   resolves against the including file's directory first and then the
   `-I` dirs; the `<...>` form only searches the `-I` dirs. The name

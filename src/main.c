@@ -434,10 +434,11 @@ static void preproc_file(char *path) {
   print_preprocessed(toks);
 }
 
-/* one -I/-D/-U option, shared by the compile and preprocess modes;
- * the -D NAME[=VALUE] and -U NAME forms match the compile loop.
- * returns 1 when argv[*i] was an option (having consumed argv[++*i]
- * for the two-token form, or argv[*i] alone for the fused one) */
+/* one -I/-D/-U/-include option, shared by the compile and preprocess
+ * modes; the -D NAME[=VALUE], -U NAME and -include FILE forms match
+ * the compile loop's two-token-or-fused parsing. returns 1 when
+ * argv[*i] was an option (having consumed argv[++*i] for the
+ * two-token form, or argv[*i] alone for the fused one) */
 static int take_cli_option(int argc, char **argv, int *i) {
   char *a = argv[*i];
   if (strncmp(a, "-I", 2) == 0) {
@@ -455,6 +456,11 @@ static int take_cli_option(int argc, char **argv, int *i) {
   if (strncmp(a, "-U", 2) == 0 && (a[2] || *i + 1 < argc)) {
     char *name = a[2] ? a + 2 : argv[++*i];
     undef_macro_cli(name);
+    return 1;
+  }
+  if (strncmp(a, "-include", 8) == 0 && (a[8] || *i + 1 < argc)) {
+    char *name = a[8] ? a + 8 : argv[++*i];
+    add_cli_include(name);
     return 1;
   }
   return 0;

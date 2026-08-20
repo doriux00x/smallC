@@ -65,6 +65,22 @@ void add_include_dir(char *dir) {
   incdirs[incdir_n++] = dir;
 }
 
+/* -include FILE options, collected by the driver: each file is
+ * preprocessed at the very start of every translation unit, as if
+ * `#include "FILE"` led the primary source, so definitions it
+ * contributes are visible for the whole unit */
+static char **cli_includes;
+static int n_cli_includes, cap_cli_includes;
+
+void add_cli_include(char *name) {
+  if (n_cli_includes == cap_cli_includes) {
+    cap_cli_includes = cap_cli_includes ? cap_cli_includes * 2 : 4;
+    cli_includes = xrealloc(cli_includes,
+                            sizeof(char *) * cap_cli_includes);
+  }
+  cli_includes[n_cli_includes++] = name;
+}
+
 /* -------- #pragma once -------- */
 
 static char **once_files;
@@ -1720,6 +1736,25 @@ Token *preprocess(Token *toks, char *srcpath) {
   stamp_now();
   Chain out;
   chain_init(&out);
+  /* -include files lead the unit; each is processed exactly like the
+   * target of `#include "FILE"` appearing at the very top of the
+   * primary source, sharing its macro state and pragma-once registry */
+  for (int i = 0; i < n_cli_includes; i++) {
+    char *found = find_include(cli_includes[i], 0, srcpath);
+    if (!found)
+      error("cannot open include file '%s' (from -include)",
+            cli_includes[i]);
+    if (once_skipped(found))
+      continue;
+    char *buf = read_file(found);
+    char *save_file = cur_file;
+    char *save_line = line_file;
+    cur_file = found;
+    line_file = NULL;
+    core_stream(tokenize(buf), &out, found, 1, 0);
+    cur_file = save_file;
+    line_file = save_line;
+  }
   core_stream(toks, &out, srcpath, 0, 1);
   chain_end(&out);
   if (cond_n > 0)
