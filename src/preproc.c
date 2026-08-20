@@ -1532,9 +1532,19 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
   }
 
   if (directive_is(name, "include")) {
-    Token *p = name->next;
+    /* the name is macro-expanded in place, as gcc does: the tokens
+     * after #include may be a macro whose expansion is a "file" or
+     * <file> spelling, so `#define HDR "x.h"` + `#include HDR`
+     * includes x.h. the expanded stream then has to be exactly one
+     * string or an angle-bracketed name, like any other include */
+    Token *end = name->next;
+    while (end->kind != TK_EOF && !end->at_bol)
+      end = end->next;
+    Token *p = expand_slice(name->next, end, 0);
     char *inc = NULL;
     int angled = 0;
+    if (!p)
+      error_at(t->loc, "expected file name after #include");
     if (p->kind == TK_STR) {
       inc = p->str;
     } else if (is_punct(p, '<')) {
@@ -1548,7 +1558,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     } else {
       error_at(p->loc, "expected file name after #include");
     }
-    *pp = skip_line(&p->next);
+    *pp = skip_line(&name->next);
 
     if (depth >= MAX_INCLUDE_DEPTH)
       error_at(t->loc, "#include nested too deep");

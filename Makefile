@@ -81,7 +81,16 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runelifdef $(OBJDIR)/runelifdef.s && \
 	./$(OBJDIR)/runelifdef && \
 	gcc -o $(OBJDIR)/runelifdef.gcc tests/runelifdef.c && \
-	./$(OBJDIR)/runelifdef.gcc
+	./$(OBJDIR)/runelifdef.gcc && \
+	echo "== runincline ==" && \
+	./$(BIN) -E tests/runincline.c > $(OBJDIR)/incline.out && \
+	gcc -E -P tests/runincline.c > $(OBJDIR)/incline.gcc && \
+	diff $(OBJDIR)/incline.out $(OBJDIR)/incline.gcc && \
+	./$(BIN) tests/runincline.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runincline $(OBJDIR)/runincline.s && \
+	./$(OBJDIR)/runincline && \
+	gcc -o $(OBJDIR)/runincline.gcc tests/runincline.c && \
+	./$(OBJDIR)/runincline.gcc
 
 clean:
 	rm -rf $(OBJDIR) $(BIN) build2 build3 smallcc2 smallcc3

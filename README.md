@@ -74,7 +74,9 @@ toolchain doing its usual job.
   compiled afterwards. `-E` runs the preprocessor alone, printing
   the result to stdout. `#include` in `"..."` form
   resolves against the including file's directory first and then the
-  `-I` dirs; the `<...>` form only searches the `-I` dirs. `#if` /
+  `-I` dirs; the `<...>` form only searches the `-I` dirs. The name
+  is macro-expanded first, as gcc does, so
+  `#define HDR "x.h"` + `#include HDR` works. `#if` /
   `#ifdef` / `#ifndef` / `#elif` / `#elifdef` / `#elifndef` / `#else` /
   `#endif` evaluate
   constant integer expressions with `defined()`, `__has_include`,
