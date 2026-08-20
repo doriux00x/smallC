@@ -100,6 +100,15 @@ toolchain doing its usual job.
   compiling, and it stays silent inside a skipped branch. `#pragma once` (and its `_Pragma("once")`
   form) compiles a file once per translation unit: the file is
   registered under its canonicalized path, so a re-include through
+  a different path spelling still skips it. `#pragma GCC poison NAME...`
+  flags each NAME like gcc: any later use, `#define`, or appearance
+  in `defined()`, `#ifdef`/`#ifndef`/`#elifdef`/`#elifndef` — but not
+  inside a skipped branch — is an error ("attempt to use poisoned
+  \"NAME\""), a guardrail for retired interfaces. `#pragma GCC poison NAME...`
+  flags each NAME like gcc: any later use, `#define`, or appearance
+  in `defined()`, `#ifdef`/`#ifndef`/`#elifdef`/`#elifndef` — but not
+  inside a skipped branch — is an error ("attempt to use poisoned
+  \"NAME\""), a guardrail for retired interfaces.
   any spelling — `..` components, `./`, symlinks — is skipped, and
   `__has_include` still reports it. The always-on macros are `__LINE__`,
   `__FILE__`, `__COUNTER__`, `__DATE__` and `__TIME__` (frozen when a

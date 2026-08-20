@@ -151,6 +151,23 @@ static char *find_include(char *inc, int angled, char *srcpath) {
   return found;
 }
 
+/* -------- #pragma GCC poison -------- */
+
+static char **poisoned;
+static int n_poisoned;
+
+static int is_poisoned(char *name) {
+  for (int i = 0; i < n_poisoned; i++)
+    if (strcmp(poisoned[i], name) == 0)
+      return 1;
+  return 0;
+}
+
+static void add_poisoned(char *name) {
+  poisoned = xrealloc(poisoned, sizeof(char *) * (n_poisoned + 1));
+  poisoned[n_poisoned++] = name;
+}
+
 /* -------- macros -------- */
 
 typedef struct Macro Macro;
@@ -639,6 +656,8 @@ static long eval_primary(Token **pp) {
         n = n->next;
       if (n->kind != TK_IDENT)
         error_at(n->loc, "expected macro name after defined");
+      if (is_poisoned(n->name))
+        error_at(n->loc, "attempt to use poisoned \"%s\"", n->name);
       long v = (find_macro(n->name) != NULL) || builtin_name(n->name);
       n = n->next;
       if (paren && !is_punct(n, ')'))
@@ -728,6 +747,8 @@ static long eval_primary(Token **pp) {
       return v;
     }
     /* a single-token integer macro (or a one-hop alias to one) */
+    if (is_poisoned(t->name))
+      error_at(t->loc, "attempt to use poisoned \"%s\"", t->name);
     Macro *m = find_macro(t->name);
     Token *only = (m && !m->is_func && m->body != m->body_end &&
                    m->body->next == m->body_end) ? m->body : NULL;
@@ -1210,6 +1231,9 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
 
   Macro *m = (t->kind == TK_IDENT) ? find_macro(t->name) : NULL;
 
+  if (t->kind == TK_IDENT && is_poisoned(t->name))
+    error_at(t->loc, "attempt to use poisoned \"%s\"", t->name);
+
   if (!m || is_painted(m)) {
     Token *b = (t->kind == TK_IDENT) ? builtin_macro(t) : NULL;
     Token *n = b ? b : t;   /* multi-argutation: copy it */
@@ -1384,6 +1408,8 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
 
   if (directive_is(name, "ifdef") || directive_is(name, "ifndef")) {
     Token *n = name->next;
+    if (n->kind == TK_IDENT && is_poisoned(n->name))
+      error_at(n->loc, "attempt to use poisoned \"%s\"", n->name);
     int defined = (n->kind == TK_IDENT &&
                   (find_macro(n->name) || builtin_name(n->name))) != 0;
     int v = directive_is(name, "ifdef") ? defined : !defined;
@@ -1419,6 +1445,8 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
        * builtins both count, and anything past it is an error, as
        * in gcc */
       Token *n = name->next;
+      if (n->kind == TK_IDENT && is_poisoned(n->name))
+        error_at(n->loc, "attempt to use poisoned \"%s\"", n->name);
       if (n->kind != TK_IDENT)
         error_at(n->loc, "expected identifier after #%s", name->loc);
       if (n->next->kind != TK_EOF && !n->next->at_bol)
@@ -1467,6 +1495,8 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     Token *d = name->next;
     if (d->kind != TK_IDENT)
       error_at(d->loc, "expected macro name after #define");
+    if (is_poisoned(d->name))
+      error_at(d->loc, "attempt to use poisoned \"%s\"", d->name);
     Macro *m = find_macro(d->name);
     if (!m) {
       m = xmalloc(sizeof(Macro));
@@ -1709,6 +1739,23 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     if (name->next->kind == TK_IDENT && strcmp(name->next->name, "once") == 0 &&
         (name->next->next->kind == TK_EOF || name->next->next->at_bol))
       once_register(srcpath);
+    /* #pragma GCC poison NAME...: gcc's guardrail - each NAME is
+     * flagged, and any later use, #define or condition on it is an
+     * error. gcc requires the `GCC poison` prefix words, a bare
+     * #pragma poison is *not* honored. poison applies to use, so a
+     * skipped #if branch may still mention a poisoned name */
+    if (name->next->kind == TK_IDENT && strcmp(name->next->name, "GCC") == 0 &&
+        name->next->next->kind == TK_IDENT &&
+        strcmp(name->next->next->name, "poison") == 0) {
+      for (Token *q = name->next->next->next;
+           q->kind != TK_EOF && !q->at_bol; q = q->next)
+        if (q->kind != TK_IDENT)
+          error_at(q->loc, "expected identifier in #pragma GCC poison");
+        else
+          add_poisoned(q->name);
+      *pp = skip_line(&name->next);
+      return;
+    }
     *pp = skip_line(&name->next);
     return;
   }
