@@ -111,7 +111,11 @@ toolchain doing its usual job.
   \"NAME\""), a guardrail for retired interfaces.
   any spelling — `..` components, `./`, symlinks — is skipped, and
   `__has_include` still reports it. The always-on macros are `__LINE__`,
-  `__FILE__`, `__COUNTER__`, `__DATE__` and `__TIME__` (frozen when a
+  `__FILE__`, `__FILE_NAME__` (the basename, gcc 12's
+  tree-independent spelling), `__INCLUDE_LEVEL__` (how deep the
+  current file sits in the include stack: 0 at the top of the unit,
+  1 in the first #include or -include, and so on), `__COUNTER__`,
+  `__DATE__` and `__TIME__` (frozen when a
   translation unit starts preprocessing, with gcc's exact formats -
   the Makefile greps the stamped date out of an -E run and compares
   it with `date`), `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__`,

@@ -389,6 +389,11 @@ static char *cur_file;
 static char *line_file;   /* the #line-set source name; NULL = cur_file */
 static int counter;
 
+/* the include depth of the file whose tokens are streaming right now,
+ * for __INCLUDE_LEVEL__: 0 in the primary source, 1 inside the first
+ * #include (or -include), and so on down the nesting */
+static int cur_dep;
+
 /* -------- dynamic macros -------- */
 
 static long builtin_value(char *s, int line);
@@ -472,6 +477,28 @@ static Token *builtin_macro(Token *t) {
     n->synth = render_quoted(n->str, n->str_len);
     return n;
   }
+  if (strcmp(t->name, "__FILE_NAME__") == 0) {
+    /* gcc 12+'s replay-friendly spelling: __FILE__ without the
+     * directory part, so builds are byte-identical across trees */
+    char *src = line_file ? line_file : cur_file;
+    char *slash = strrchr(src, '/');
+    char *base = slash ? slash + 1 : src;
+    n = xmalloc(sizeof(Token));
+    *n = *t;
+    n->kind = TK_STR;
+    n->str = xstrdup(base);
+    n->str_len = strlen(n->str);
+    n->synth = render_quoted(n->str, n->str_len);
+    return n;
+  }
+  if (strcmp(t->name, "__INCLUDE_LEVEL__") == 0) {
+    n = xmalloc(sizeof(Token));
+    *n = *t;
+    n->kind = TK_NUM;
+    n->val = cur_dep;
+    n->synth = render_num(n->val);
+    return n;
+  }
   if (strcmp(t->name, "__VERSION__") == 0) {
     n = xmalloc(sizeof(Token));
     *n = *t;
@@ -514,6 +541,7 @@ static int builtin_name(char *s) {
   if (is_undef(s))
     return 0;
   return strcmp(s, "__LINE__") == 0 || strcmp(s, "__FILE__") == 0 ||
+         strcmp(s, "__FILE_NAME__") == 0 || strcmp(s, "__INCLUDE_LEVEL__") == 0 ||
          strcmp(s, "__COUNTER__") == 0 || strcmp(s, "__STDC__") == 0 ||
          strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__STDC_HOSTED__") == 0 ||
          strcmp(s, "__DATE__") == 0 || strcmp(s, "__TIME__") == 0 ||
@@ -529,8 +557,10 @@ static int builtin_name(char *s) {
 /* the value of a builtin macro in a #if expression: STDC_VERSION stays
  * at 199901, the C99 floor this compiler targets, even though the gcc
  * version claimed above is newer; string builtins (__FILE__,
- * __VERSION__) have no numeric value and evaluate to 0 */
+ * __FILE_NAME__, __VERSION__) have no numeric value and evaluate to 0 */
 static long builtin_value(char *s, int line) {
+  if (strcmp(s, "__INCLUDE_LEVEL__") == 0)
+    return cur_dep;
   if (strcmp(s, "__STDC__") == 0)
     return 1;
   if (strcmp(s, "__STDC_VERSION__") == 0)
@@ -1788,6 +1818,7 @@ static void core_stream(Token *toks, Chain *out, char *srcpath, int depth,
                         int emit_eof) {
   Token *t = toks;
   for (; t->kind != TK_EOF; ) {
+    cur_dep = depth;   /* restored after every nested include */
     if (t->kind == TK_PUNCT && *t->loc == '#' && t->at_bol) {
       handle_directive(&t, out, srcpath, depth);
       continue;

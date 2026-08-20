@@ -119,7 +119,16 @@ test: $(BIN)
 	! gcc -Itests/inc -o /dev/null tests/runpoison_bad.c >/dev/null 2>&1 && \
 	./$(BIN) -Itests/inc tests/runpoison_bad.c 2>&1 | grep -o 'attempt to use poisoned "sneaky"' | sort -u > $(OBJDIR)/poison.ours && \
 	gcc -Itests/inc -o /dev/null tests/runpoison_bad.c 2>&1 | grep -o 'attempt to use poisoned "sneaky"' | sort -u > $(OBJDIR)/poison.gcc && \
-	diff $(OBJDIR)/poison.ours $(OBJDIR)/poison.gcc
+	diff $(OBJDIR)/poison.ours $(OBJDIR)/poison.gcc && \
+	echo "== runinclvl ==" && \
+	./$(BIN) -E -Itests/inc tests/runinclvl.c > $(OBJDIR)/inclvl.out && \
+	gcc -E -P -Itests/inc tests/runinclvl.c > $(OBJDIR)/inclvl.gcc && \
+	diff $(OBJDIR)/inclvl.out $(OBJDIR)/inclvl.gcc && \
+	./$(BIN) -Itests/inc tests/runinclvl.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runinclvl $(OBJDIR)/runinclvl.s && \
+	./$(OBJDIR)/runinclvl && \
+	gcc -Itests/inc -o $(OBJDIR)/runinclvl.gcc tests/runinclvl.c && \
+	./$(OBJDIR)/runinclvl.gcc
 	echo "== runinclnext ==" && \
 	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \
