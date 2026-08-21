@@ -127,7 +127,9 @@ toolchain doing its usual job.
   `__DATE__` and `__TIME__` (frozen when a
   translation unit starts preprocessing, with gcc's exact formats -
   the Makefile greps the stamped date out of an -E run and compares
-  it with `date`), `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__`,
+  it with `date`), `__TIMESTAMP__` (each file's own mtime in
+  ctime's format, cross-checked against `date -r FILE`),
+  `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__`,
   the gcc
   identification set `__GNUC__`/`__GNUC_MINOR__`/`__GNUC_PATCHLEVEL__`/
   `__GNUC_STDC_INLINE__`/`__VERSION__` (mirrored from the gcc that

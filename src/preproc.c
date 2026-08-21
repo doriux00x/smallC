@@ -446,6 +446,32 @@ static void stamp_now(void) {
   stamp_time = xstrdup(buf);
 }
 
+/* __TIMESTAMP__: the mtime of the file being read right now
+ * (cur_file - a header reports its own, not the unit's), formatted
+ * like ctime(): "Thu Mar  5 07:08:09 2026". the value is cached on
+ * the path pointer; cur_file strings live for the whole run */
+static char *stamp_timestamp(void) {
+  static char *cached_path;
+  static char cached_val[32];
+  static const char *wdays[] = {"Sun", "Mon", "Tue", "Wed",
+                                "Thu", "Fri", "Sat"};
+  static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  if (cached_path == cur_file)
+    return cached_val;
+  struct stat st;
+  if (stat(cur_file, &st) != 0) {
+    cached_val[0] = '\0';
+    return cached_val;
+  }
+  struct tm *t = localtime(&st.st_mtime);
+  snprintf(cached_val, sizeof(cached_val), "%s %s %2d %02d:%02d:%02d %d",
+           wdays[t->tm_wday], months[t->tm_mon], t->tm_mday,
+           t->tm_hour, t->tm_min, t->tm_sec, t->tm_year + 1900);
+  cached_path = cur_file;
+  return cached_val;
+}
+
 /* the -E rendering of a synthesized token. builtin macros evaluate
  * to tokens whose source bytes say nothing about the value, and
  * stringize drops the quotes, so the preprocessed output prints
@@ -492,6 +518,15 @@ static Token *builtin_macro(Token *t) {
     n->kind = TK_STR;
     n->str = stamp_time;
     n->str_len = strlen(stamp_time);
+    n->synth = render_quoted(n->str, n->str_len);
+    return n;
+  }
+  if (strcmp(t->name, "__TIMESTAMP__") == 0) {
+    n = xmalloc(sizeof(Token));
+    *n = *t;
+    n->kind = TK_STR;
+    n->str = stamp_timestamp();
+    n->str_len = strlen(n->str);
     n->synth = render_quoted(n->str, n->str_len);
     return n;
   }
@@ -572,6 +607,7 @@ static int builtin_name(char *s) {
          strcmp(s, "__COUNTER__") == 0 || strcmp(s, "__STDC__") == 0 ||
          strcmp(s, "__STDC_VERSION__") == 0 || strcmp(s, "__STDC_HOSTED__") == 0 ||
          strcmp(s, "__DATE__") == 0 || strcmp(s, "__TIME__") == 0 ||
+         strcmp(s, "__TIMESTAMP__") == 0 ||
          strcmp(s, "__GNUC__") == 0 ||
          strcmp(s, "__GNUC_MINOR__") == 0 || strcmp(s, "__GNUC_PATCHLEVEL__") == 0 ||
          strcmp(s, "__GNUC_STDC_INLINE__") == 0 || strcmp(s, "__VERSION__") == 0 ||

@@ -68,7 +68,8 @@ int mkdir(char *path, int mode);
 
 /* the build-time stamp for __DATE__ and __TIME__: broken-down local
  * time, the same fields gcc's preprocessor reads (time_t is long on
- * this platform) */
+ * this platform). a prefix of the host's struct tm: localtime()
+ * fills the whole thing, we read the first seven fields */
 struct tm {
   int tm_sec;
   int tm_min;
@@ -76,8 +77,34 @@ struct tm {
   int tm_mday;
   int tm_mon;
   int tm_year;
+  int tm_wday;
 };
 long time(long *timer);
 struct tm *localtime(const long *timer);
+
+/* the file stamp for __TIMESTAMP__: the host's x86-64 struct stat,
+ * full 144-byte layout - glibc's stat() writes every field, so a
+ * truncated copy would smash the caller's stack */
+struct stat {
+  unsigned long st_dev;
+  unsigned long st_ino;
+  unsigned long st_nlink;
+  unsigned int st_mode;
+  unsigned int st_uid;
+  unsigned int st_gid;
+  unsigned int stat_pad0;
+  unsigned long st_rdev;
+  long st_size;
+  long st_blksize;
+  long st_blocks;
+  long st_atime;
+  unsigned long st_atime_nsec;
+  long st_mtime;
+  unsigned long st_mtime_nsec;
+  long st_ctime;
+  unsigned long st_ctime_nsec;
+  long stat_reserved[3];
+};
+int stat(char *path, struct stat *st);
 
 #endif

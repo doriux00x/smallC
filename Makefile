@@ -150,7 +150,18 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runredef $(OBJDIR)/runredef.s && \
 	./$(OBJDIR)/runredef && \
 	gcc -o $(OBJDIR)/runredef.gcc tests/runredef.c && \
-	./$(OBJDIR)/runredef.gcc
+	./$(OBJDIR)/runredef.gcc && \
+	echo "== runtstamp ==" && \
+	./$(BIN) -E -Itests/inc tests/runtstamp.c > $(OBJDIR)/tstamp.out && \
+	gcc -E -P -Itests/inc tests/runtstamp.c > $(OBJDIR)/tstamp.gcc && \
+	diff $(OBJDIR)/tstamp.out $(OBJDIR)/tstamp.gcc && \
+	grep -q "main_ts = \"$$(date -r tests/runtstamp.c '+%a %b %e %T %Y')\";" $(OBJDIR)/tstamp.out && \
+	grep -q "hdr_ts = \"$$(date -r tests/inc/tstamp.h '+%a %b %e %T %Y')\";" $(OBJDIR)/tstamp.out && \
+	./$(BIN) -Itests/inc tests/runtstamp.c && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runtstamp $(OBJDIR)/runtstamp.s && \
+	./$(OBJDIR)/runtstamp && \
+	gcc -Itests/inc -o $(OBJDIR)/runtstamp.gcc tests/runtstamp.c && \
+	./$(OBJDIR)/runtstamp.gcc
 	echo "== runinclnext ==" && \
 	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \
