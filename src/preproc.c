@@ -183,9 +183,33 @@ struct Macro {
   char *def_file;       /* where the current definition came from, for
                          * the redefined-warning note */
   int def_line;
+  char *def_loc;        /* its name token, for the column; NULL when
+                         * the definition came from the command line */
 };
 
 static Macro *macros;
+
+/* C99 6.10.3p2: a redefinition is benign when the parameter names
+ * and the replacement list are the same token sequence - spacing,
+ * comments and the choice of spelling of a number do not count, so
+ * the tokens are compared by kind and source bytes */
+static int same_def(Macro *a, Macro *b) {
+  if (a->is_func != b->is_func || a->is_varargs != b->is_varargs ||
+      a->nparams != b->nparams)
+    return 0;
+  for (int i = 0; i < a->nparams; i++)
+    if (strcmp(a->params[i], b->params[i]) != 0)
+      return 0;
+  Token *x = a->body, *y = b->body;
+  while (x != a->body_end && y != b->body_end) {
+    if (x->kind != y->kind || x->len != y->len ||
+        memcmp(x->loc, y->loc, x->len) != 0)
+      return 0;
+    x = x->next;
+    y = y->next;
+  }
+  return x == a->body_end && y == b->body_end;
+}
 
 /* names whose predefined meaning was revoked by -U or #undef: every
  * builtin lookup consults this list, so such a name behaves as if
@@ -635,6 +659,11 @@ void define_macro_cli(char *def) {
   while (m->body_end->kind != TK_EOF)
     m->body_end = m->body_end->next;
   validate_body(m, m->body, m->body_end, 0);
+  /* a later in-file #define warns against the command line as the
+   * previous definition, spelled like gcc spells it */
+  m->def_file = "<command-line>";
+  m->def_line = 0;
+  m->def_loc = NULL;
 }
 
 void undef_macro_cli(char *name) {
@@ -1531,7 +1560,15 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     if (is_poisoned(d->name))
       error_at(d->loc, "attempt to use poisoned \"%s\"", d->name);
     Macro *m = find_macro(d->name);
-    if (!m) {
+    Macro old;
+    int had_old = 0;
+    if (m) {
+      /* the previous definition survives the parse in `old`: a
+       * different redefinition warns against it (gcc's default
+       * -Wmacro-redefined), an identical one is silently accepted */
+      old = *m;
+      had_old = 1;
+    } else {
       m = xmalloc(sizeof(Macro));
       m->name = d->name;
       m->next = macros;
@@ -1598,6 +1635,21 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     m->body = b;
     m->body_end = skip_line(&b);
     validate_body(m, m->body, m->body_end, 0);
+    if (had_old && !same_def(&old, m)) {
+      fprintf(stderr, "%s:%d:%d: warning: \"%s\" redefined\n",
+              srcpath, d->line, col_at(d->loc), d->name);
+      if (old.def_loc)
+        fprintf(stderr,
+                "%s:%d:%d: note: this is the location of the previous definition\n",
+                old.def_file, old.def_line, col_at(old.def_loc));
+      else
+        fprintf(stderr,
+                "%s: note: this is the location of the previous definition\n",
+                old.def_file ? old.def_file : "<command-line>");
+    }
+    m->def_file = srcpath;
+    m->def_line = d->line;
+    m->def_loc = d->loc;
     *pp = m->body_end;
     return;
   }

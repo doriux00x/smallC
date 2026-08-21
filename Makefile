@@ -139,7 +139,18 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runpmsg $(OBJDIR)/runpmsg.s && \
 	./$(OBJDIR)/runpmsg && \
 	gcc -o $(OBJDIR)/runpmsg.gcc tests/runpmsg.c && \
-	./$(OBJDIR)/runpmsg.gcc
+	./$(OBJDIR)/runpmsg.gcc && \
+	echo "== runredef ==" && \
+	./$(BIN) tests/runredef.c > $(OBJDIR)/runredef.s 2> $(OBJDIR)/redef.ours && \
+	test $$(grep -c 'warning: "' $(OBJDIR)/redef.ours) -eq 2 && \
+	grep -E 'warning: "|previous definition' $(OBJDIR)/redef.ours > $(OBJDIR)/redef.o1 && \
+	gcc -c tests/runredef.c -o /dev/null 2> $(OBJDIR)/redef.gcc && \
+	grep -E 'warning: "|previous definition' $(OBJDIR)/redef.gcc > $(OBJDIR)/redef.o2 && \
+	diff $(OBJDIR)/redef.o1 $(OBJDIR)/redef.o2 && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runredef $(OBJDIR)/runredef.s && \
+	./$(OBJDIR)/runredef && \
+	gcc -o $(OBJDIR)/runredef.gcc tests/runredef.c && \
+	./$(OBJDIR)/runredef.gcc
 	echo "== runinclnext ==" && \
 	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \

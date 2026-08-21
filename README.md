@@ -71,7 +71,11 @@ toolchain doing its usual job.
   replacement list, tokenized like a `#define` body; `-U` and
   `#undef` can even revoke a predefined macro, and the macro table
   survives across input files, so the flags apply to every file
-  compiled afterwards. `-include FILE` preprocesses `FILE` at the
+  compiled afterwards. Redefining a macro warns (gcc's default
+  `-Wmacro-redefined`) unless the new parameter names and body are
+  the same token sequence — spacing does not count — and the note
+  points at the previous definition (`<command-line>` for `-D`);
+  `#undef` first and there is nothing to warn about. `-include FILE` preprocesses `FILE` at the
   very start of every translation unit, as if an `#include "FILE"`
   led the source; it shares the macros and `#pragma once` registry
   of the unit that follows it. `-E` runs the preprocessor alone, printing
