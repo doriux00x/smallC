@@ -166,6 +166,15 @@ test: $(BIN)
 	./$(BIN) -M -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/deps.ours && \
 	gcc -M -nostdinc -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/deps.gcc && \
 	diff $(OBJDIR)/deps.ours $(OBJDIR)/deps.gcc
+	echo "== runmdflags ==" && \
+	./$(BIN) -M -MP -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/mp.ours && \
+	gcc -M -MP -nostdinc -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/mp.gcc && \
+	diff $(OBJDIR)/mp.ours $(OBJDIR)/mp.gcc && \
+	./$(BIN) -MD -MP -Itests/inc -Itests/inc2 tests/rundeps.c && \
+	test -f $(OBJDIR)/rundeps.d && \
+	gcc -c -MD -MP -nostdinc -Itests/inc -Itests/inc2 tests/rundeps.c && \
+	diff $(OBJDIR)/rundeps.d rundeps.d && \
+	rm -f rundeps.o rundeps.d
 	echo "== runinclnext ==" && \
 	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \

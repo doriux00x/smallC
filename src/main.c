@@ -363,11 +363,21 @@ static void dump_stmt(Node *n, int d) {
   }
 }
 
+/* -M side flags: -MP appends a phony rule per dependency (so a
+ * deleted header does not break `make` mid-build), and -MD/-MMD
+ * write the rule to build/<base>.d as a side effect of compiling
+ * instead of taking the whole run over */
+static int g_dep_phony;
+static int g_deps_sidecar;
+
+static void write_rule(char *path, FILE *out);
+
 static void usage(void) {
   fprintf(stderr, "usage: smallcc [-a|-t|-E|-M] <file.c>\n");
   fprintf(stderr, "       smallcc [-I dir]... [-D NAME[=VALUE]]... [-U NAME]... <file.c>...\n");
   fprintf(stderr, "       -E preprocesses to stdout (gcc's -E -P form: no # markers,\n");
-  fprintf(stderr, "         no comments); -M writes the make dependency rule;\n");
+  fprintf(stderr, "         no comments); -M writes the make dependency rule\n");
+  fprintf(stderr, "         (-MP phony rules; -MD/-MMD write build/<base>.d);\n");
   fprintf(stderr, "         each other file compiles to build/<base>.s\n");
   exit(1);
 }
@@ -377,16 +387,19 @@ static char *out_base(char *path) {
   char *base = strrchr(path, '/');
   base = base ? base + 1 : path;
   char *dot = strrchr(base, '.');
-  if (dot)
-    *dot = '\0';
-  char *out = xmalloc(strlen(base) + 8);
-  sprintf(out, "build/%s.s", base);
+  /* build/<stem>.s without touching the caller's path */
+  int stem = dot ? (int)(dot - base) : (int)strlen(base);
+  char *out = xmalloc(stem + 9);
+  memcpy(out, "build/", 6);
+  memcpy(out + 6, base, stem);
+  memcpy(out + 6 + stem, ".s", 3);
   return out;
 }
 
 /* every compiled or preprocessed file resets its own state, so
  * several files in one run are exactly several separate runs */
 static void compile_file(char *path) {
+  reset_deps();
   g_src = read_file(path);
   Token *toks = preprocess(tokenize(g_src), path);
   Node *root = parse(toks);
@@ -394,6 +407,17 @@ static void compile_file(char *path) {
   char *outpath = out_base(path);
   mkdir("build", 0755);   /* cc(1) would just fail, we're kinder */
   codegen(root, outpath);
+  if (g_deps_sidecar) {
+    /* -MD/-MMD: the rule lands next to the assembly, target named
+     * after the .o this run would feed */
+    char *d = out_base(path);
+    d[strlen(d) - 1] = 'd';
+    FILE *f = fopen(d, "w");
+    if (!f)
+      error("cannot open %s", d);
+    write_rule(path, f);
+    fclose(f);
+  }
 }
 
 /* -E: the preprocessed chain back out as text. synthesized tokens
@@ -444,6 +468,14 @@ static void deps_file(char *path) {
   g_src = read_file(path);
   reset_deps();
   preprocess(tokenize(g_src), path);
+  write_rule(path, stdout);
+}
+
+/* the -M rule for one file: target = source with .o swapped in, the
+ * source leads, then every preprocessed file in open order deduped,
+ * wrapped with " \" continuations so no line runs past column 73
+ * before a continuation */
+static void write_rule(char *path, FILE *out) {
   char *slash = strrchr(path, '/');
   char *base = slash ? slash + 1 : path;
   char *dot = strrchr(base, '.');
@@ -451,24 +483,26 @@ static void deps_file(char *path) {
   char *target = xmalloc(stem + 4);
   memcpy(target, base, stem);
   memcpy(target + stem, ".o", 3);
-  int col = printf("%s:", target);
-  /* the source leads the dependency list, then its headers */
-  printf(" ");
+  int col = fprintf(out, "%s:", target);
+  fprintf(out, " ");
   col++;
-  col += printf("%s", path);
+  col += fprintf(out, "%s", path);
   int ndeps;
   char **deps = get_deps(&ndeps);
   for (int i = 0; i < ndeps; i++) {
     int len = (int)strlen(deps[i]);
     if (col && col + 1 + len > 73) {
-      printf(" \\\n");
+      fprintf(out, " \\\n");
       col = 0;
     }
-    printf(" ");
+    fprintf(out, " ");
     col++;
-    col += printf("%s", deps[i]);
+    col += fprintf(out, "%s", deps[i]);
   }
-  printf("\n");
+  fprintf(out, "\n");
+  if (g_dep_phony)
+    for (int i = 0; i < ndeps; i++)
+      fprintf(out, "%s:\n", deps[i]);
 }
 
 /* one -I/-D/-U/-include option, shared by the compile and preprocess
@@ -478,6 +512,15 @@ static void deps_file(char *path) {
  * two-token form, or argv[*i] alone for the fused one) */
 static int take_cli_option(int argc, char **argv, int *i) {
   char *a = argv[*i];
+  if (strcmp(a, "-MP") == 0) {
+    g_dep_phony = 1;
+    return 1;
+  }
+  if (strcmp(a, "-MD") == 0 || strcmp(a, "-MMD") == 0) {
+    /* -MMD would skip system headers; none exist here */
+    g_deps_sidecar = 1;
+    return 1;
+  }
   if (strncmp(a, "-I", 2) == 0) {
     char *dir = a + 2;
     if (!*dir && *i + 1 < argc)
@@ -543,9 +586,9 @@ int main(int argc, char **argv) {
   if (mode == MODE_DEPS) {
     int nfiles = 0;
     for (int i = 1; i < argc; i++) {
-      if (strncmp(argv[i], "-M", 2) == 0)
-        continue;
       if (take_cli_option(argc, argv, &i))
+        continue;
+      if (strncmp(argv[i], "-M", 2) == 0)
         continue;
       deps_file(argv[i]);
       nfiles++;

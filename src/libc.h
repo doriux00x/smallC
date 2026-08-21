@@ -23,6 +23,7 @@ int *__errno_location(void);
 #define ERANGE 34
 
 extern FILE *stderr;
+extern FILE *stdout;
 
 void *malloc(size_t n);
 void *realloc(void *p, size_t n);

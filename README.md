@@ -83,7 +83,10 @@ toolchain doing its usual job.
   counts as a system header) writes gcc's make dependency rule: the
   source leads the list, every file preprocessed for it follows in
   open order deduped, wrapped with ` \` continuations at gcc's
-  column. `#include` in `"..."` form
+  column. `-MP` appends a phony `<dep>:` rule per dependency (so a
+  deleted header does not break `make` mid-build); `-MD`/`-MMD`
+  write the same rule to `build/<base>.d` as a side effect of a
+  normal compile instead of taking the run over. `#include` in `"..."` form
   resolves against the including file's directory first and then the
   `-I` dirs; the `<...>` form only searches the `-I` dirs. The name
   is macro-expanded first, as gcc does, so
