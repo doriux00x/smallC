@@ -364,10 +364,11 @@ static void dump_stmt(Node *n, int d) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: smallcc [-a|-t|-E] <file.c>\n");
+  fprintf(stderr, "usage: smallcc [-a|-t|-E|-M] <file.c>\n");
   fprintf(stderr, "       smallcc [-I dir]... [-D NAME[=VALUE]]... [-U NAME]... <file.c>...\n");
   fprintf(stderr, "       -E preprocesses to stdout (gcc's -E -P form: no # markers,\n");
-  fprintf(stderr, "         no comments); each other file compiles to build/<base>.s\n");
+  fprintf(stderr, "         no comments); -M writes the make dependency rule;\n");
+  fprintf(stderr, "         each other file compiles to build/<base>.s\n");
   exit(1);
 }
 
@@ -434,6 +435,42 @@ static void preproc_file(char *path) {
   print_preprocessed(toks);
 }
 
+/* -M: the make dependency rule for one file, gcc's format. the
+ * target is the source with .o swapped in; the source leads the
+ * dependency list, then every file preprocessed for it in open
+ * order, deduped, wrapped with " \" continuations so no line runs
+ * past column 73 before a continuation */
+static void deps_file(char *path) {
+  g_src = read_file(path);
+  reset_deps();
+  preprocess(tokenize(g_src), path);
+  char *slash = strrchr(path, '/');
+  char *base = slash ? slash + 1 : path;
+  char *dot = strrchr(base, '.');
+  int stem = dot ? (int)(dot - base) : (int)strlen(base);
+  char *target = xmalloc(stem + 4);
+  memcpy(target, base, stem);
+  memcpy(target + stem, ".o", 3);
+  int col = printf("%s:", target);
+  /* the source leads the dependency list, then its headers */
+  printf(" ");
+  col++;
+  col += printf("%s", path);
+  int ndeps;
+  char **deps = get_deps(&ndeps);
+  for (int i = 0; i < ndeps; i++) {
+    int len = (int)strlen(deps[i]);
+    if (col && col + 1 + len > 73) {
+      printf(" \\\n");
+      col = 0;
+    }
+    printf(" ");
+    col++;
+    col += printf("%s", deps[i]);
+  }
+  printf("\n");
+}
+
 /* one -I/-D/-U/-include option, shared by the compile and preprocess
  * modes; the -D NAME[=VALUE], -U NAME and -include FILE forms match
  * the compile loop's two-token-or-fused parsing. returns 1 when
@@ -467,7 +504,8 @@ static int take_cli_option(int argc, char **argv, int *i) {
 }
 
 int main(int argc, char **argv) {
-  enum { MODE_COMPILE, MODE_DUMP_AST, MODE_DUMP_TOKENS, MODE_PREPROC } mode
+  enum { MODE_COMPILE, MODE_DUMP_AST, MODE_DUMP_TOKENS, MODE_PREPROC,
+         MODE_DEPS } mode
     = MODE_COMPILE;
   char *path;
 
@@ -479,6 +517,12 @@ int main(int argc, char **argv) {
     path = argv[2];
   } else if (argc >= 2 && strcmp(argv[1], "-E") == 0) {
     mode = MODE_PREPROC;
+    path = NULL;
+  } else if (argc >= 2 && (strcmp(argv[1], "-M") == 0 ||
+                           strcmp(argv[1], "-MM") == 0)) {
+    /* -MM is the same rule here: every header arrives through -I or
+     * the source tree, so nothing counts as a system header */
+    mode = MODE_DEPS;
     path = NULL;
   } else if (argc >= 2) {
     path = NULL;
@@ -493,6 +537,21 @@ int main(int argc, char **argv) {
         continue;
       compile_file(argv[i]);
     }
+    return 0;
+  }
+
+  if (mode == MODE_DEPS) {
+    int nfiles = 0;
+    for (int i = 1; i < argc; i++) {
+      if (strncmp(argv[i], "-M", 2) == 0)
+        continue;
+      if (take_cli_option(argc, argv, &i))
+        continue;
+      deps_file(argv[i]);
+      nfiles++;
+    }
+    if (!nfiles)
+      usage();
     return 0;
   }
 

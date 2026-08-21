@@ -161,7 +161,11 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runtstamp $(OBJDIR)/runtstamp.s && \
 	./$(OBJDIR)/runtstamp && \
 	gcc -Itests/inc -o $(OBJDIR)/runtstamp.gcc tests/runtstamp.c && \
-	./$(OBJDIR)/runtstamp.gcc
+	./$(OBJDIR)/runtstamp.gcc && \
+	echo "== rundeps ==" && \
+	./$(BIN) -M -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/deps.ours && \
+	gcc -M -nostdinc -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/deps.gcc && \
+	diff $(OBJDIR)/deps.ours $(OBJDIR)/deps.gcc
 	echo "== runinclnext ==" && \
 	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \

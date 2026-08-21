@@ -81,6 +81,33 @@ void add_cli_include(char *name) {
   cli_includes[n_cli_includes++] = name;
 }
 
+/* -------- dependency tracking for -M -------- */
+
+static char **dep_files;
+static int n_dep_files, cap_dep_files;
+
+void reset_deps(void) {
+  n_dep_files = 0;
+}
+
+/* every file actually preprocessed lands here once, in open order -
+ * a second include resolves to the same spelling and dedupes */
+static void add_dep(char *found) {
+  for (int i = 0; i < n_dep_files; i++)
+    if (strcmp(dep_files[i], found) == 0)
+      return;
+  if (n_dep_files == cap_dep_files) {
+    cap_dep_files = cap_dep_files ? cap_dep_files * 2 : 16;
+    dep_files = xrealloc(dep_files, sizeof(char *) * cap_dep_files);
+  }
+  dep_files[n_dep_files++] = xstrdup(found);
+}
+
+char **get_deps(int *n) {
+  *n = n_dep_files;
+  return dep_files;
+}
+
 /* -------- #pragma once -------- */
 
 static char **once_files;
@@ -1762,6 +1789,7 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
   if (!found) {
     error_at(t->loc, "cannot open include file '%s'", inc);
   }
+  add_dep(found);
   if (once_skipped(found)) {
     /* the target is under #pragma once and already compiled */
     return;
@@ -1980,6 +2008,7 @@ Token *preprocess(Token *toks, char *srcpath) {
             cli_includes[i]);
     if (once_skipped(found))
       continue;
+    add_dep(found);
     char *buf = read_file(found);
     char *save_file = cur_file;
     char *save_line = line_file;

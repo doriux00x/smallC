@@ -78,8 +78,12 @@ toolchain doing its usual job.
   `#undef` first and there is nothing to warn about. `-include FILE` preprocesses `FILE` at the
   very start of every translation unit, as if an `#include "FILE"`
   led the source; it shares the macros and `#pragma once` registry
-  of the unit that follows it. `-E` runs the preprocessor alone, printing
-  the result to stdout. `#include` in `"..."` form
+  of the unit that follows it. `-E` runs the preprocessor alone,
+  printing the result to stdout, and `-M` (or `-MM`; nothing here
+  counts as a system header) writes gcc's make dependency rule: the
+  source leads the list, every file preprocessed for it follows in
+  open order deduped, wrapped with ` \` continuations at gcc's
+  column. `#include` in `"..."` form
   resolves against the including file's directory first and then the
   `-I` dirs; the `<...>` form only searches the `-I` dirs. The name
   is macro-expanded first, as gcc does, so
