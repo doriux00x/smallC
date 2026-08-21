@@ -128,7 +128,18 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/runinclvl $(OBJDIR)/runinclvl.s && \
 	./$(OBJDIR)/runinclvl && \
 	gcc -Itests/inc -o $(OBJDIR)/runinclvl.gcc tests/runinclvl.c && \
-	./$(OBJDIR)/runinclvl.gcc
+	./$(OBJDIR)/runinclvl.gcc && \
+	echo "== runpmsg ==" && \
+	./$(BIN) tests/runpmsg.c > $(OBJDIR)/runpmsg.s 2> $(OBJDIR)/pmsg.ours && \
+	gcc -fsyntax-only tests/runpmsg.c 2> $(OBJDIR)/pmsg.gcc && \
+	test $$(grep -c "note:" $(OBJDIR)/pmsg.ours) -eq 3 && \
+	grep "note:" $(OBJDIR)/pmsg.ours | awk -F"message: " '{print $$2}' | tr -d "'" > $(OBJDIR)/pmsg.o1 && \
+	grep "note:" $(OBJDIR)/pmsg.gcc | tr -d '\200-\377' | awk -F"message: " '{print $$2}' | tr -d "'" > $(OBJDIR)/pmsg.o2 && \
+	diff $(OBJDIR)/pmsg.o1 $(OBJDIR)/pmsg.o2 && \
+	$(CC) $(CFLAGS) -o $(OBJDIR)/runpmsg $(OBJDIR)/runpmsg.s && \
+	./$(OBJDIR)/runpmsg && \
+	gcc -o $(OBJDIR)/runpmsg.gcc tests/runpmsg.c && \
+	./$(OBJDIR)/runpmsg.gcc
 	echo "== runinclnext ==" && \
 	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \

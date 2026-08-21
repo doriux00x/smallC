@@ -97,7 +97,12 @@ toolchain doing its usual job.
   renumbers the file like gcc does, and `_Pragma` pipes through to
   the skipped-pragma path. `#warning msg` prints gcc's own line
   format (`path:line:col: warning: #warning msg [-Wcpp]`) and keeps
-  compiling, and it stays silent inside a skipped branch. `#pragma once` (and its `_Pragma("once")`
+  compiling, and it stays silent inside a skipped branch.
+  `#pragma message("text")` is gcc's build-time banner: the operand
+  is macro-expanded and adjacent strings concatenate, a
+  `path:line:col: note: '#pragma message: text'` goes to stderr,
+  and the compile goes on; a malformed operand draws gcc's
+  "expected a string" warning instead. `#pragma once` (and its `_Pragma("once")`
   form) compiles a file once per translation unit: the file is
   registered under its canonicalized path, so a re-include through
   a different path spelling still skips it. `#pragma GCC poison NAME...`

@@ -180,6 +180,9 @@ struct Macro {
   char **params;
   Token *body;          /* body tokens, iterated by bounds */
   Token *body_end;
+  char *def_file;       /* where the current definition came from, for
+                         * the redefined-warning note */
+  int def_line;
 };
 
 static Macro *macros;
@@ -1783,6 +1786,46 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
           error_at(q->loc, "expected identifier in #pragma GCC poison");
         else
           add_poisoned(q->name);
+      *pp = skip_line(&name->next);
+      return;
+    }
+    /* #pragma message("text"): a note on stderr, the compile goes
+     * on - gcc's build-time banner. the operand is macro-expanded
+     * (message(MSG) works), must sit in parens and expand to one or
+     * more adjacent strings that concatenate; anything else draws
+     * gcc's "expected a string" warning and the line is dropped */
+    if (name->next->kind == TK_IDENT &&
+        strcmp(name->next->name, "message") == 0) {
+      Token *lp = name->next->next;
+      if (!is_punct(lp, '(')) {
+        fprintf(stderr,
+                "%s:%d:%d: warning: expected a string after '#pragma message'\n",
+                srcpath, t->line, col_at(lp->loc));
+        *pp = skip_line(&name->next);
+        return;
+      }
+      Token *end = lp;
+      while (end->kind != TK_EOF && !end->at_bol && !is_punct(end, ')'))
+        end = end->next;
+      if (!is_punct(end, ')'))
+        error_at(lp->loc, "unterminated #pragma message");
+      char *msg = NULL;
+      int msg_n = 0;
+      for (Token *x = expand_slice(lp->next, end, 0); x; x = x->next)
+        if (x->kind == TK_STR) {
+          msg = xrealloc(msg, msg_n + x->str_len + 1);
+          memcpy(msg + msg_n, x->str, x->str_len);
+          msg_n += x->str_len;
+        }
+      if (!msg) {
+        fprintf(stderr,
+                "%s:%d:%d: warning: expected a string after '#pragma message'\n",
+                srcpath, t->line, col_at(name->next->loc));
+      } else {
+        msg[msg_n] = '\0';
+        fprintf(stderr, "%s:%d:%d: note: '#pragma message: %s'\n",
+                srcpath, t->line, col_at(name->next->loc), msg);
+      }
       *pp = skip_line(&name->next);
       return;
     }
