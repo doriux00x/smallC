@@ -370,15 +370,21 @@ static void dump_stmt(Node *n, int d) {
 static int g_dep_phony;
 static int g_deps_sidecar;
 
+/* -E -P: gcc's blank-collapsed form. plain -E (the default) emits
+ * the linemarkers instead */
+static int g_flag_P;
+
 static void write_rule(char *path, FILE *out);
 
 static void usage(void) {
   fprintf(stderr, "usage: smallcc [-a|-t|-E|-M] <file.c>\n");
   fprintf(stderr, "       smallcc [-I dir]... [-D NAME[=VALUE]]... [-U NAME]... <file.c>...\n");
-  fprintf(stderr, "       -E preprocesses to stdout (gcc's -E -P form: no # markers,\n");
-  fprintf(stderr, "         no comments); -M writes the make dependency rule\n");
-  fprintf(stderr, "         (-MP phony rules; -MD/-MMD write build/<base>.d);\n");
-  fprintf(stderr, "         each other file compiles to build/<base>.s\n");
+  fprintf(stderr, "       -E preprocesses to stdout (gcc's default form:\n");
+  fprintf(stderr, "         linemarkers; add -P for the -E -P form: no #\n");
+  fprintf(stderr, "         markers, blank lines collapse); -M writes the make\n");
+  fprintf(stderr, "         dependency rule (-MP phony rules; -MD/-MMD write\n");
+  fprintf(stderr, "         build/<base>.d); each other file compiles to\n");
+  fprintf(stderr, "         build/<base>.s\n");
   exit(1);
 }
 
@@ -453,10 +459,107 @@ static void print_preprocessed(Token *t) {
   printf("\n");
 }
 
+/* leading whitespace when a token opens an output row: its source
+ * column (gcc continues a consumed line at the byte offset where
+ * output resumes), or the inherited indent for synthesized tokens */
+static void print_row_indent(Token *t) {
+  int n = (t->synth || t->virt) ? (t->indent < 0 ? 1 : t->indent)
+                                : col_at(t->loc) - 1;
+  for (int i = 0; i < n; i++)
+    printf(" ");
+}
+
+static void print_lm(Token *t, char *path);
+
 static void preproc_file(char *path) {
   g_src = read_file(path);
+  lm_set(!g_flag_P);
   Token *toks = preprocess(tokenize(g_src), path);
-  print_preprocessed(toks);
+  if (g_flag_P)
+    print_preprocessed(toks);
+  else
+    print_lm(toks, path);
+}
+
+/* plain -E, gcc's default form: the "# line "file"" markers around
+ * the token stream. the opening triple mirrors gcc's (# 0 for the
+ * primary file, <built-in> and <command-line>), then each file
+ * transition recorded by the preprocessor prints its marker - " 1"
+ * entering an include, " 2" returning past its directive, none on a
+ * plain start or resync. between rows the source's own line
+ * structure shows through: up to seven skipped lines pad as blank
+ * rows, a longer jump resyncs with a bare marker at the new line.
+ * row breaks follow at_bol like the -P printer does, so tokens a
+ * macro expansion splices into one line stay on one line */
+static void print_lm(Token *t, char *path) {
+  printf("# 0 \"%s\"\n", path);
+  printf("# 0 \"<built-in>\"\n");
+  printf("# 0 \"<command-line>\"\n");
+  int written = 0;      /* last source row accounted for */
+  int row_open = 0;
+  const char *cur_name = path;
+  for (; t->kind != TK_EOF; t = t->next) {
+    if (t->kind == TK_LMARK) {
+      if (t->val == 1 && t->ev_line - 1 > written) {
+        /* lines of the parent before the #include directive are
+         * still unrendered - directive-only and blank source lines
+         * show as blank rows here, or resync when too far back */
+        int skipped = t->ev_line - written - 1;
+        if (row_open) {
+          printf("\n");
+          row_open = 0;
+        }
+        if (skipped > 7)
+          printf("# %d \"%s\"\n", t->ev_line, cur_name);
+        else
+          for (int i = 0; i < skipped; i++)
+            printf("\n");
+      } else if (row_open) {
+        printf("\n");
+        row_open = 0;
+      }
+      if (t->val == 0)
+        printf("# 1 \"%s\"\n", t->name);
+      else
+        printf("# %d \"%s\"%s\n", t->line, t->name,
+               t->val == 1 ? " 1" : " 2");
+      written = t->line - 1;
+      cur_name = t->name;
+      continue;
+    }
+    if (!t->exp && t->line > written) {
+      /* a real token from a fresh source line opens that row:
+       * blank runs up to seven lines pad as newlines, a longer
+       * jump resyncs with a bare marker; expansion-carried tokens
+       * glue onto whatever row is open instead */
+      int skipped = t->line - written - 1;
+      if (skipped > 7) {
+        if (row_open)
+          printf("\n");
+        printf("# %d \"%s\"\n", t->line, cur_name);
+        print_row_indent(t);
+      } else {
+        if (row_open)
+          printf("\n");
+        for (int i = 0; i < skipped; i++)
+          printf("\n");
+        print_row_indent(t);
+      }
+      row_open = 0;
+      written = t->line;
+    } else if (!row_open) {
+      print_row_indent(t);
+    } else if (t->space) {
+      printf(" ");
+    }
+    if (t->synth)
+      printf("%s", t->synth);
+    else
+      printf("%.*s", t->len, t->loc);
+    row_open = 1;
+  }
+  if (row_open)
+    printf("\n");
 }
 
 /* -M: the make dependency rule for one file, gcc's format. the
@@ -512,6 +615,11 @@ static void write_rule(char *path, FILE *out) {
  * two-token form, or argv[*i] alone for the fused one) */
 static int take_cli_option(int argc, char **argv, int *i) {
   char *a = argv[*i];
+  if (strcmp(a, "-P") == 0) {
+    /* with -E: gcc's blank-collapsed form instead of linemarkers */
+    g_flag_P = 1;
+    return 1;
+  }
   if (strcmp(a, "-MP") == 0) {
     g_dep_phony = 1;
     return 1;

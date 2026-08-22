@@ -49,7 +49,7 @@ test: $(BIN)
 	$(CC) $(CFLAGS) -o $(OBJDIR)/rundef $(OBJDIR)/rundef.s; \
 	./$(OBJDIR)/rundef; \
 	echo "== rune =="; \
-	./$(BIN) -E -D FLAG=9 tests/rune.c > $(OBJDIR)/rune.out && \
+	./$(BIN) -E -P -D FLAG=9 tests/rune.c > $(OBJDIR)/rune.out && \
 	gcc -E -P -D FLAG=9 tests/rune.c > $(OBJDIR)/rune.gcc && \
 	diff $(OBJDIR)/rune.out $(OBJDIR)/rune.gcc && \
 	./$(BIN) $(OBJDIR)/rune.out && \
@@ -68,13 +68,13 @@ test: $(BIN)
 	./$(BIN) tests/rundaytime.c && \
 	$(CC) $(CFLAGS) -o $(OBJDIR)/rundaytime $(OBJDIR)/rundaytime.s && \
 	./$(OBJDIR)/rundaytime && \
-	./$(BIN) -E tests/rundaytime.c > $(OBJDIR)/daytime.out && \
+	./$(BIN) -E -P tests/rundaytime.c > $(OBJDIR)/daytime.out && \
 	nowdate="$$(date +'%b %e %Y')" && \
 	nowtime="$$(date +'%H:%M:%S')" && \
 	grep -q "build_date = \"$$nowdate\";" $(OBJDIR)/daytime.out && \
 	grep -q "build_time = \"$$nowtime\";" $(OBJDIR)/daytime.out && \
 	echo "== runelifdef ==" && \
-	./$(BIN) -E tests/runelifdef.c > $(OBJDIR)/elifdef.out && \
+	./$(BIN) -E -P tests/runelifdef.c > $(OBJDIR)/elifdef.out && \
 	gcc -E -P tests/runelifdef.c > $(OBJDIR)/elifdef.gcc && \
 	diff $(OBJDIR)/elifdef.out $(OBJDIR)/elifdef.gcc && \
 	./$(BIN) tests/runelifdef.c && \
@@ -83,7 +83,7 @@ test: $(BIN)
 	gcc -o $(OBJDIR)/runelifdef.gcc tests/runelifdef.c && \
 	./$(OBJDIR)/runelifdef.gcc && \
 	echo "== runincline ==" && \
-	./$(BIN) -E tests/runincline.c > $(OBJDIR)/incline.out && \
+	./$(BIN) -E -P tests/runincline.c > $(OBJDIR)/incline.out && \
 	gcc -E -P tests/runincline.c > $(OBJDIR)/incline.gcc && \
 	diff $(OBJDIR)/incline.out $(OBJDIR)/incline.gcc && \
 	./$(BIN) tests/runincline.c && \
@@ -92,7 +92,7 @@ test: $(BIN)
 	gcc -o $(OBJDIR)/runincline.gcc tests/runincline.c && \
 	./$(OBJDIR)/runincline.gcc && \
 	echo "== runincl ==" && \
-	./$(BIN) -E -Itests/inc -include inc1.h tests/runincl.c > $(OBJDIR)/incl.out && \
+	./$(BIN) -E -P -Itests/inc -include inc1.h tests/runincl.c > $(OBJDIR)/incl.out && \
 	gcc -E -P -Itests/inc -include inc1.h tests/runincl.c > $(OBJDIR)/incl.gcc && \
 	diff $(OBJDIR)/incl.out $(OBJDIR)/incl.gcc && \
 	./$(BIN) -Itests/inc -include inc1.h tests/runincl.c && \
@@ -101,7 +101,7 @@ test: $(BIN)
 	gcc -Itests/inc -include inc1.h -o $(OBJDIR)/runincl.gcc tests/runincl.c && \
 	./$(OBJDIR)/runincl.gcc && \
 	echo "== runinclnext ==" && \
-	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
+	./$(BIN) -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \
 	diff $(OBJDIR)/inclnext.out $(OBJDIR)/inclnext.gcc && \
 	./$(BIN) -Itests/inc -Itests/inc2 tests/runinclnext.c && \
@@ -121,7 +121,7 @@ test: $(BIN)
 	gcc -Itests/inc -o /dev/null tests/runpoison_bad.c 2>&1 | grep -o 'attempt to use poisoned "sneaky"' | sort -u > $(OBJDIR)/poison.gcc && \
 	diff $(OBJDIR)/poison.ours $(OBJDIR)/poison.gcc && \
 	echo "== runinclvl ==" && \
-	./$(BIN) -E -Itests/inc tests/runinclvl.c > $(OBJDIR)/inclvl.out && \
+	./$(BIN) -E -P -Itests/inc tests/runinclvl.c > $(OBJDIR)/inclvl.out && \
 	gcc -E -P -Itests/inc tests/runinclvl.c > $(OBJDIR)/inclvl.gcc && \
 	diff $(OBJDIR)/inclvl.out $(OBJDIR)/inclvl.gcc && \
 	./$(BIN) -Itests/inc tests/runinclvl.c && \
@@ -152,7 +152,7 @@ test: $(BIN)
 	gcc -o $(OBJDIR)/runredef.gcc tests/runredef.c && \
 	./$(OBJDIR)/runredef.gcc && \
 	echo "== runtstamp ==" && \
-	./$(BIN) -E -Itests/inc tests/runtstamp.c > $(OBJDIR)/tstamp.out && \
+	./$(BIN) -E -P -Itests/inc tests/runtstamp.c > $(OBJDIR)/tstamp.out && \
 	gcc -E -P -Itests/inc tests/runtstamp.c > $(OBJDIR)/tstamp.gcc && \
 	diff $(OBJDIR)/tstamp.out $(OBJDIR)/tstamp.gcc && \
 	grep -q "main_ts = \"$$(date -r tests/runtstamp.c '+%a %b %e %T %Y')\";" $(OBJDIR)/tstamp.out && \
@@ -166,6 +166,13 @@ test: $(BIN)
 	./$(BIN) -M -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/deps.ours && \
 	gcc -M -nostdinc -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/deps.gcc && \
 	diff $(OBJDIR)/deps.ours $(OBJDIR)/deps.gcc
+	echo "== runlm ==" && \
+	./$(BIN) -E tests/runlm.c > $(OBJDIR)/lm.ours && \
+	gcc -E -nostdinc tests/runlm.c > $(OBJDIR)/lm.gcc && \
+	diff $(OBJDIR)/lm.ours $(OBJDIR)/lm.gcc && \
+	./$(BIN) -E -Itests/inc -include inc1.h tests/runincl.c > $(OBJDIR)/lmi.ours && \
+	gcc -E -nostdinc -Itests/inc -include inc1.h tests/runincl.c > $(OBJDIR)/lmi.gcc && \
+	diff $(OBJDIR)/lmi.ours $(OBJDIR)/lmi.gcc
 	echo "== runmdflags ==" && \
 	./$(BIN) -M -MP -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/mp.ours && \
 	gcc -M -MP -nostdinc -Itests/inc -Itests/inc2 tests/rundeps.c > $(OBJDIR)/mp.gcc && \
@@ -176,7 +183,7 @@ test: $(BIN)
 	diff $(OBJDIR)/rundeps.d rundeps.d && \
 	rm -f rundeps.o rundeps.d
 	echo "== runinclnext ==" && \
-	./$(BIN) -E -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
+	./$(BIN) -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.out && \
 	gcc -E -P -Itests/inc -Itests/inc2 tests/runinclnext.c > $(OBJDIR)/inclnext.gcc && \
 	diff $(OBJDIR)/inclnext.out $(OBJDIR)/inclnext.gcc && \
 	./$(BIN) -Itests/inc -Itests/inc2 tests/runinclnext.c && \

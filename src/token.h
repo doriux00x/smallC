@@ -20,6 +20,12 @@ typedef enum {
   TK_EXTENSION, TK_ATTRIBUTE,
 
   TK_PUNCT,
+
+  /* synthetic: an -E linemarker, never produced by tokenize; val
+   * carries the marker kind (0 start, 1 enter, 2 return), name the
+   * file path and line the marker's line number; ev_line is the
+   * including directive's line in the parent for enter markers */
+  TK_LMARK,
 } TokenKind;
 
 typedef struct Token Token;
@@ -46,6 +52,15 @@ struct Token {
   char *synth;   /* -E rendering: the text a synthesized token prints
                   * (builtin macro values, stringized arguments), when
                   * its source bytes say nothing about the value */
+  int ev_line;   /* TK_LMARK only: the #include directive's line in
+                  * the parent, for enter markers' pending blanks */
+  int exp;       /* the token arrived through macro expansion (a
+                  * spliced copy): plain -E never lets it open a
+                  * new output row */
+  int virt;      /* an expansion head standing in for its macro
+                  * name: plain -E indents it by the invocation's
+                  * own leading whitespace, not its define-site
+                  * column */
 };
 
 Token *tokenize(char *p);

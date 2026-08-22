@@ -178,6 +178,33 @@ static char *find_include(char *inc, int angled, char *srcpath) {
   return found;
 }
 
+/* -------- -E linemarkers -------- */
+
+/* plain -E (gcc's default form, without -P) interleaves "# line
+ * "file"" markers into the token stream: one when the primary file
+ * starts, " 1"-flagged on entering an include and " 2"-flagged on
+ * returning past the directive. the transitions are recorded here,
+ * at the only two sites that switch files, as synthetic TK_LMARK
+ * tokens appended to the output chain - ordering against the tokens
+ * is then the chain's own order, and a header with no surviving
+ * tokens still yields its enter/return pair */
+static int lm_on;
+
+void lm_set(int on) {
+  lm_on = on;
+}
+
+/* kind: 0 start, 1 enter, 2 return */
+static Token *lm_token(int kind, char *path, int line) {
+  Token *t = xmalloc(sizeof(Token));
+  memset(t, 0, sizeof(Token));
+  t->kind = TK_LMARK;
+  t->val = kind;
+  t->name = path;
+  t->line = line;
+  return t;
+}
+
 /* -------- #pragma GCC poison -------- */
 
 static char **poisoned;
@@ -317,6 +344,7 @@ static Token *copy_chain(Token *t) {
   for (; t; t = t->next) {
     Token *c = xmalloc(sizeof(Token));
     *c = *t;
+    c->exp = 1;
     cur = cur->next = c;
   }
   return head.next;
@@ -326,6 +354,7 @@ static Token *copy_chain(Token *t) {
 static Token *copy_token(Token *t) {
   Token *c = xmalloc(sizeof(Token));
   *c = *t;
+  c->exp = 1;
   c->next = NULL;
   return c;
 }
@@ -1290,20 +1319,27 @@ static void subst_body_range(Macro *m, Token **args, Token **ends,
 
 static void subst_body(Macro *m, Token **args, Token **ends,
                        Token **expanded, Chain *out, int depth,
-                       int at_bol, int space, int indent) {
+                       int at_bol, int space, int indent, int line) {
   Chain body;
   chain_init(&body);
   subst_body_range(m, args, ends, expanded, m->body, m->body_end, &body, depth);
   chain_end(&body);
   /* the replacement text takes the invocation's place, so its first
-   * token inherits the invocation's at_bol, space and indent flags:
+   * token inherits the invocation's at_bol, space, indent and line:
    * the -E output keeps the call site's line structure ("M" on its
    * own line stays on its own line) and its separation ("v = F;"
-   * prints "v = 9;", "v=F;" prints "v=9;") */
+   * prints "v = 9;", "v=F;" prints "v=9;"); plain -E also needs the
+   * invocation's line so an expansion landing after consumed lines
+   * still opens the right output row */
   if (body.head) {
     body.head->at_bol = at_bol;
     body.head->space = space;
     body.head->indent = indent;
+    body.head->line = line;
+    /* the head now stands at the invocation's position - it may
+     * open a plain -E output row again */
+    body.head->exp = 0;
+    body.head->virt = 1;
   }
   for (Token *x = body.head; x; )
     expand_unit(&x, out, depth + 1);
@@ -1379,7 +1415,7 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
   if (!m->is_func) {
     *pp = t->next;
     painting[paint_n++] = m;
-    subst_body(m, NULL, NULL, NULL, out, depth + 1, t->at_bol, t->space, t->indent);
+    subst_body(m, NULL, NULL, NULL, out, depth + 1, t->at_bol, t->space, t->indent, t->line);
     paint_n--;
     return;
   }
@@ -1455,7 +1491,7 @@ static void expand_unit(Token **pp, Chain *out, int depth) {
 
   /* substitute and rescan the body under the paint */
   painting[paint_n++] = m;
-  subst_body(m, args, ends, expanded, out, depth + 1, t->at_bol, t->space, t->indent);
+  subst_body(m, args, ends, expanded, out, depth + 1, t->at_bol, t->space, t->indent, t->line);
   paint_n--;
 }
 
@@ -1510,6 +1546,37 @@ static void validate_body(Macro *m, Token *start, Token *end, int in_vaopt) {
     }
   }
 }
+
+/* one pragma row for plain -E: gcc renders a handled pragma (once,
+ * GCC poison) as a whitespace-only row the width of the `#pragma`
+ * keyword, and passes any other pragma through verbatim, tokens
+ * joined with single spaces. either way the directive's source line
+ * is accounted like any other row */
+static Token *lm_pragma_row(Token *name, int handled) {
+  Token *t = xmalloc(sizeof(Token));
+  memset(t, 0, sizeof(Token));
+  t->kind = TK_IDENT;
+  t->at_bol = 1;
+  t->line = name->line;
+  if (handled) {
+    t->synth = "       ";
+    return t;
+  }
+  int cap = 16;
+  for (Token *q = name; q->kind != TK_EOF && !q->at_bol; q = q->next)
+    cap += q->len + 2;
+  char *buf = xmalloc(cap);
+  int n = sprintf(buf, "#pragma");
+  for (Token *q = name->next; q->kind != TK_EOF && !q->at_bol; q = q->next) {
+    n += sprintf(buf + n, " ");
+    memcpy(buf + n, q->loc, q->len);
+    n += q->len;
+  }
+  buf[n] = '\0';
+  t->synth = buf;
+  return t;
+}
+
 
 static void handle_directive(Token **pp, Chain *out, char *srcpath,
                              int depth) {
@@ -1798,14 +1865,22 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
     char *save_file = cur_file;
     char *save_line = line_file;
     char *buf = read_file(found);
+    if (lm_on) {
+      Token *ev = lm_token(1, found, 1);
+      /* the parent's lines before the directive still render */
+      ev->ev_line = t->line;
+      chain_add(out, ev);
+    }
     cur_file = found;
     line_file = NULL;
     core_stream(tokenize(buf), out, found, depth + 1, 0);
+    if (lm_on)
+      /* the marker resumes the parent one line past the directive */
+      chain_add(out, lm_token(2, save_file, t->line + 1));
     cur_file = save_file;
     line_file = save_line;
     return;
   }
-
   if (directive_is(name, "error")) {
     Token *n = name->next;
     if (n->kind == TK_EOF || n->at_bol)
@@ -1886,8 +1961,13 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
      * spelling reaches it. gcc honors the directive only when
      * `once` is the whole line; any other pragma is skipped */
     if (name->next->kind == TK_IDENT && strcmp(name->next->name, "once") == 0 &&
-        (name->next->next->kind == TK_EOF || name->next->next->at_bol))
+        (name->next->next->kind == TK_EOF || name->next->next->at_bol)) {
       once_register(srcpath);
+      if (lm_on)
+        chain_add(out, lm_pragma_row(name, 1));
+      *pp = skip_line(&name->next);
+      return;
+    }
     /* #pragma GCC poison NAME...: gcc's guardrail - each NAME is
      * flagged, and any later use, #define or condition on it is an
      * error. gcc requires the `GCC poison` prefix words, a bare
@@ -1902,6 +1982,8 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
           error_at(q->loc, "expected identifier in #pragma GCC poison");
         else
           add_poisoned(q->name);
+      if (lm_on)
+        chain_add(out, lm_pragma_row(name, 1));
       *pp = skip_line(&name->next);
       return;
     }
@@ -1945,6 +2027,9 @@ static void handle_directive(Token **pp, Chain *out, char *srcpath,
       *pp = skip_line(&name->next);
       return;
     }
+    /* any other pragma passes through to plain -E output verbatim */
+    if (lm_on)
+      chain_add(out, lm_pragma_row(name, 0));
     *pp = skip_line(&name->next);
     return;
   }
@@ -2012,12 +2097,23 @@ Token *preprocess(Token *toks, char *srcpath) {
     char *buf = read_file(found);
     char *save_file = cur_file;
     char *save_line = line_file;
+    if (lm_on) {
+      Token *ev = lm_token(1, found, 1);
+      ev->ev_line = 0;    /* -include: no parent rows to flush */
+      chain_add(&out, ev);
+    }
     cur_file = found;
     line_file = NULL;
     core_stream(tokenize(buf), &out, found, 1, 0);
+    if (lm_on)
+      /* gcc pops -include files back to the command line before the
+       * primary file's own marker */
+      chain_add(&out, lm_token(2, "<command-line>", 0));
     cur_file = save_file;
     line_file = save_line;
   }
+  if (lm_on)
+    chain_add(&out, lm_token(0, srcpath, 1));
   core_stream(toks, &out, srcpath, 0, 1);
   chain_end(&out);
   if (cond_n > 0)

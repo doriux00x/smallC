@@ -280,10 +280,17 @@ Two debug flags, mostly for developing the compiler itself:
     ./smallcc -a tests/switch.c   # dump the AST
     ./smallcc -t tests/lexer.c    # dump the token stream
 
-`-E` prints the preprocessed translation unit to stdout (no assembly,
-no `#` markers), matching `gcc -E -P` byte for byte on its own test
-files - the Makefile `test` target diffs the two and then recompiles
-the printed text, so an -E regression is a failed diff:
+`-E` prints the preprocessed translation unit to stdout, matching
+gcc byte for byte in both of its forms: plain `-E` emits gcc's
+linemarkers (`# 0 "file"` / `# 0 "<built-in>"` / `# 0 "<command-line>"`
+opening triple; `# 1 "header" 1` entering an include and
+`# N "parent" 2` returning past its directive; blank rows for
+consumed source lines with a bare resync marker whenever a jump
+exceeds seven lines; handled pragmas collapsing to the seven-space
+row and unknown pragmas passing through verbatim), while `-E -P`
+keeps the marker-free collapsed form. Both are diffed against gcc by
+the Makefile `test` target, which then recompiles the printed text,
+so an -E regression is a failed diff:
 
     ./smallcc -E -D FLAG=9 tests/rune.c
 

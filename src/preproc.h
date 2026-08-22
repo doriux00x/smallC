@@ -8,6 +8,7 @@ void add_cli_include(char *name);
 void define_macro_cli(char *def);
 void undef_macro_cli(char *name);
 Token *preprocess(Token *toks, char *srcpath);
+void lm_set(int on);
 void reset_deps(void);
 char **get_deps(int *n);
 
